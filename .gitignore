@@ -1,0 +1,6 @@
+#target
+node_modules
+dist
+mobile/dist
+.DS_Store
+*.tmp

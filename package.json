@@ -1,0 +1,17 @@
+{
+  "name": "stick-the-ticket",
+  "version": "1.0.0",
+  "description": "Ontario Provincial Offences Act (POA) charge finder and requirement checklist for frontline officers.",
+  "private": true,
+  "scripts": {
+    "start": "python3 -m http.server 8766 -d mobile",
+    "test": "node mobile/tests/browser.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jswizzle3737/Stick-The-Ticket.git"
+  },
+  "keywords": ["poa", "police", "ontario", "traffic", "tickets", "enforcement", "checklist"],
+  "author": "jswizzle3737",
+  "license": "MIT"
+}

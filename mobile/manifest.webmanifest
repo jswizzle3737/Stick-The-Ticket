@@ -1,0 +1,13 @@
+{
+  "name": "Stick the Ticket",
+  "short_name": "Stick Ticket",
+  "description": "Ontario POA charge finder, fine schedules and officer requirements checklist.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#070c08",
+  "theme_color": "#070c08",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
