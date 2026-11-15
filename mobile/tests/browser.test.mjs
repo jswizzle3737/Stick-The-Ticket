@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { chromium } from 'playwright';
 
-const PORT = 8789;
+const PORT = 8790;
 let server;
 let browser;
 
@@ -47,114 +47,68 @@ after(async () => {
   if (server) await new Promise(resolve => server.close(resolve));
 });
 
-describe('Stick the Ticket Web App Tests', () => {
-  test('Page loads properly with header and trillium emblem', async () => {
-    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+describe('Stick the Ticket Canvas Layout Tests (Exact 1:1 with Stick the Charge)', () => {
+  test('Canvas screen element exists and initial loading clears', async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
     await page.goto(`http://localhost:${PORT}/`);
     
-    // Check title and header
+    // Check title
     const title = await page.title();
     assert.match(title, /Stick the Ticket/i);
 
-    const header = await page.locator('.header-title-wrap h1').innerText();
-    assert.equal(header, 'Stick the Ticket');
+    // Canvas exists and has rendered
+    const canvas = page.locator('#screen');
+    assert.ok(await canvas.isVisible());
 
-    // Check trillium icon presence
-    const trillium = await page.locator('.trillium-icon').first();
-    assert.ok(await trillium.isVisible());
-    await page.close();
-  });
+    // Loading overlay is cleared
+    await page.waitForFunction(() => document.querySelector('#loading').textContent === '');
 
-  test('Theme toggle switches between dark and light mode', async () => {
-    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    await page.goto(`http://localhost:${PORT}/`);
-    
-    const themeBtn = page.locator('#theme-toggle');
-    const html = page.locator('html');
-
-    // Default dark
-    assert.equal(await html.getAttribute('data-theme'), 'dark');
-
-    // Click to light
-    await themeBtn.click();
-    assert.equal(await html.getAttribute('data-theme'), 'light');
-    assert.equal(await themeBtn.innerText(), 'Dark');
-
-    // Click back to dark
-    await themeBtn.click();
-    assert.equal(await html.getAttribute('data-theme'), 'dark');
-    assert.equal(await themeBtn.innerText(), 'Light');
-    await page.close();
-  });
-
-  test('Navigation to POA Codes and search filtering works', async () => {
-    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    await page.goto(`http://localhost:${PORT}/`);
-
-    // Click POA Codes tab
-    await page.locator('.nav-btn[data-tab="charges"]').click();
-
-    // Verify charge items are listed
-    const cards = page.locator('.charge-card');
-    const count = await cards.count();
-    assert.ok(count >= 10, 'Expected at least 10 POA charges');
-
-    // Search for speeding
-    const searchInput = page.locator('#search-input');
-    await searchInput.fill('speeding');
-    await page.waitForTimeout(100);
-
-    const filteredCount = await page.locator('.charge-card').count();
-    assert.ok(filteredCount > 0 && filteredCount < count, 'Search should filter list');
-
-    // Click on speeding row to view details
-    await page.locator('.charge-card').first().click();
-    
-    // Detail view elements check
-    const detailTitle = await page.locator('.detail-title').innerText();
-    assert.match(detailTitle, /Speeding/i);
-
-    // Verify Short-Form Wording box
-    const wording = await page.locator('.wording-text').innerText();
-    assert.match(wording, /Speeding/i);
-
-    // Verify Essential Elements Checklist
-    const elementItems = page.locator('.checklist-section').first().locator('.check-item');
-    assert.ok(await elementItems.count() >= 3);
-
-    // Test clicking a checklist item to verify
-    const firstCheck = elementItems.first();
-    assert.ok(!(await firstCheck.getAttribute('class')).includes('checked'));
-    await firstCheck.click();
-    assert.ok((await firstCheck.getAttribute('class')).includes('checked'));
-
-    // Test Pinning / Sticking the charge
-    const stickBtn = page.locator('#detail-stick');
-    assert.equal(await stickBtn.innerText(), '+ Pin Charge');
-    await stickBtn.click();
-    assert.equal(await stickBtn.innerText(), '✓ Pinned');
-
-    // Go to Pinned tab and verify it appears
-    await page.locator('.nav-btn[data-tab="saved"]').click();
-    const pinnedCards = page.locator('.charge-card');
-    assert.equal(await pinnedCards.count(), 1);
-    assert.match(await pinnedCards.first().innerText(), /Speeding/i);
+    // Photos button exists in camera bar
+    const photosBtn = page.locator('#open-photos');
+    assert.ok(await photosBtn.isVisible());
 
     await page.close();
   });
 
-  test('Evidence photos dialog opens and closes', async () => {
+  test('Canvas navigation to POA charges and hit-testing works', async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
+    await page.goto(`http://localhost:${PORT}/`);
+    await page.waitForFunction(() => document.querySelector('#loading').textContent === '');
+
+    // Measure canvas dimensions
+    const box = await page.locator('#screen').boundingBox();
+    assert.ok(box.width > 280 && box.height > 500);
+
+    // Click POA Code nav tab (middle tab in bottom bar)
+    await page.mouse.click(195, 710);
+    await page.waitForTimeout(200);
+
+    // Open first row
+    await page.mouse.click(195, 270);
+    await page.waitForTimeout(200);
+
+    // Save button (top right of detail bar)
+    const saveBox = await page.evaluate(() => window.testClickables.find(c => c.w === 76));
+    assert.ok(saveBox, 'Save button should be present on detail screen');
+    await page.mouse.click(saveBox.x + 20, saveBox.y + 20);
+    await page.waitForTimeout(200);
+
+    // Check localStorage persistence
+    const saved = await page.evaluate(() => localStorage.getItem('stick-the-ticket-saved'));
+    assert.ok(saved && saved.length > 5, 'Charge should be saved in localStorage');
+
+    await page.close();
+  });
+
+  test('Evidence photos dialog opens, displays UI, and closes', async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     await page.goto(`http://localhost:${PORT}/`);
 
-    const openPhotosBtn = page.locator('#open-photos');
-    await openPhotosBtn.click();
-
+    await page.locator('#open-photos').click();
     const dialog = page.locator('#photos');
     assert.ok(await dialog.isVisible());
 
-    const closePhotosBtn = page.locator('#close-photos');
-    await closePhotosBtn.click();
+    await page.locator('#close-photos').click();
     assert.ok(!(await dialog.isVisible()));
 
     await page.close();

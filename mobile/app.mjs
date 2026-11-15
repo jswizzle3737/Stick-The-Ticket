@@ -1,556 +1,923 @@
+// Canvas-rendered egui layout emulator for Stick the Ticket (Exact 1:1 match with Stick the Charge)
 import { CHARGES, CATEGORIES, POA_GENERAL_CHECKLIST } from './legislation_data.mjs';
 import { listPhotos, savePhoto, deletePhoto, capturePhoto } from './photos.mjs';
 
-// Application State
-const state = {
-  currentTab: 'home', // 'home' | 'charges' | 'saved'
-  selectedCategory: 'all',
-  searchQuery: '',
-  selectedChargeId: null,
-  sortBy: 'section', // 'section' | 'name'
-  savedCharges: new Set(JSON.parse(localStorage.getItem('stick-the-ticket-saved') || '[]')),
-  // checklist state stored per charge: { [chargeId]: { [checkItemId]: boolean } }
-  checklistState: JSON.parse(localStorage.getItem('stick-the-ticket-checks') || '{}'),
-  theme: localStorage.getItem('stick-the-ticket-theme') || 'dark'
+const canvas = document.querySelector('#screen');
+const ctx = canvas.getContext('2d');
+const loading = document.querySelector('#loading');
+
+// Layout Constants (identical to Stick the Charge egui constants)
+const NAV_H = 64.0;
+const PAD = 18.0;
+
+// High contrast palette with subtle green tint & highlights
+const THEME = {
+  light: {
+    page: '#eaefe9',
+    body: '#141f17',
+    screen: '#f0f5ef',
+    surface: '#ffffff',
+    surface_hover: '#e3eae2',
+    surface_press: '#d5e0d3',
+    line: '#cfded1',
+    ink: '#141f17',
+    ink_dim: '#3e5242',
+    ink_faint: '#607965',
+    accent: '#1b7a42',   // Forest green accent
+    green: '#1b7a42',    // Brand green (matching crimson in charge)
+    link: '#166534'
+  },
+  dark: {
+    page: '#070a08',
+    body: '#000000',
+    screen: '#0f1711',
+    surface: '#18241b',
+    surface_hover: '#243428',
+    surface_press: '#304434',
+    line: '#2d3d30',
+    ink: '#f7faf8',
+    ink_dim: '#d2e3d5',
+    ink_faint: '#8fa894',
+    accent: '#4ade80',   // Emerald green accent
+    green: '#22c55e',    // Brand green
+    link: '#86efac'
+  }
 };
 
-// Apply Initial Theme
-document.documentElement.setAttribute('data-theme', state.theme);
+let isDark = localStorage.getItem('stick-the-ticket-theme') === 'dark';
+document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
 
-const app = document.querySelector('#app');
-
-function saveSavedCharges() {
-  localStorage.setItem('stick-the-ticket-saved', JSON.stringify(Array.from(state.savedCharges)));
+function colors() {
+  return isDark ? THEME.dark : THEME.light;
 }
 
-function saveChecklistState() {
-  localStorage.setItem('stick-the-ticket-checks', JSON.stringify(state.checklistState));
+// State
+let tab = 'home'; // 'home' | 'charges' | 'saved'
+let query = '';
+let filter = null;
+let sort = 'number'; // 'number' | 'name'
+let openChargeIdx = null;
+let stuck = new Set(JSON.parse(localStorage.getItem('stick-the-ticket-saved') || '[]'));
+let checkedItems = JSON.parse(localStorage.getItem('stick-the-ticket-checks') || '{}');
+let listScrollY = 0;
+let detailScrollY = 0;
+
+function saveStuck() {
+  localStorage.setItem('stick-the-ticket-saved', JSON.stringify(Array.from(stuck)));
+}
+
+function saveChecks() {
+  localStorage.setItem('stick-the-ticket-checks', JSON.stringify(checkedItems));
 }
 
 function toggleTheme() {
-  state.theme = state.theme === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', state.theme);
-  localStorage.setItem('stick-the-ticket-theme', state.theme);
-  render();
+  isDark = !isDark;
+  document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+  localStorage.setItem('stick-the-ticket-theme', isDark ? 'dark' : 'light');
+  requestRedraw();
 }
 
-function toggleSaved(chargeId) {
-  if (state.savedCharges.has(chargeId)) {
-    state.savedCharges.delete(chargeId);
-  } else {
-    state.savedCharges.add(chargeId);
+// Click Targets for Hit-Testing on Canvas
+let clickables = [];
+function addClickable(rect, action) {
+  clickables.push({ rect, action });
+  window.testClickables = clickables.map(c => ({
+    x: Math.round(c.rect.x),
+    y: Math.round(c.rect.y),
+    w: Math.round(c.rect.w),
+    h: Math.round(c.rect.h)
+  }));
+}
+
+// Trillium / Provincial Flower Vector (replaces Canadian Maple Leaf)
+function drawLeafShapes(context, cx, cy, size, color) {
+  context.save();
+  context.translate(cx, cy);
+  const scale = size / 48;
+  context.scale(scale, scale);
+
+  context.fillStyle = color;
+  context.strokeStyle = color;
+
+  // 3 Trillium Sepals
+  context.beginPath();
+  context.lineWidth = 3.5;
+  context.lineCap = 'round';
+  context.moveTo(0, 0); context.lineTo(0, 20);
+  context.moveTo(0, 0); context.lineTo(-17, -10);
+  context.moveTo(0, 0); context.lineTo(17, -10);
+  context.stroke();
+
+  // 3 Trillium Petals
+  for (let i = 0; i < 3; i++) {
+    context.save();
+    context.rotate((i * 120 * Math.PI) / 180);
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.bezierCurveTo(-9, -12, -12, -26, 0, -30);
+    context.bezierCurveTo(12, -26, 9, -12, 0, 0);
+    context.fill();
+    context.restore();
   }
-  saveSavedCharges();
-  render();
+
+  // Center pip
+  context.beginPath();
+  context.arc(0, 0, 3.5, 0, Math.PI * 2);
+  context.fillStyle = isDark ? '#fef08a' : '#ca8a04';
+  context.fill();
+
+  context.restore();
 }
 
-function toggleCheck(chargeId, checkId) {
-  if (!state.checklistState[chargeId]) {
-    state.checklistState[chargeId] = {};
-  }
-  state.checklistState[chargeId][checkId] = !state.checklistState[chargeId][checkId];
-  saveChecklistState();
-  render();
-}
-
-function filterCharges(isSavedView = false) {
-  const q = state.searchQuery.trim().toLowerCase();
-  return CHARGES.filter(c => {
-    if (isSavedView && !state.savedCharges.has(c.id)) return false;
-    if (!isSavedView && state.selectedCategory !== 'all' && c.category !== state.selectedCategory) return false;
+function visibleCharges(stuckOnly = false) {
+  const q = query.trim().toLowerCase();
+  let list = CHARGES.map((c, i) => ({ ...c, originalIdx: i })).filter(c => {
+    if (stuckOnly) return stuck.has(c.id);
+    if (filter && c.category !== filter) return false;
     if (!q) return true;
     return (
       c.section.toLowerCase().includes(q) ||
       c.name.toLowerCase().includes(q) ||
       c.statute.toLowerCase().includes(q) ||
-      c.shortWording.toLowerCase().includes(q) ||
-      (c.subSection && c.subSection.toLowerCase().includes(q))
+      c.shortWording.toLowerCase().includes(q)
     );
-  }).sort((a, b) => {
-    if (state.sortBy === 'name') return a.name.localeCompare(b.name);
-    return a.section.localeCompare(b.section, undefined, { numeric: true });
   });
+
+  if (sort === 'number') {
+    list.sort((a, b) => a.section.localeCompare(b.section, undefined, { numeric: true }));
+  } else {
+    list.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return list;
 }
 
-// Render Trillium SVG Vector Emblem
-function trilliumIcon(size = 32) {
-  return `
-    <svg class="trillium-icon" width="${size}" height="${size}" viewBox="0 0 192 192">
-      <defs>
-        <linearGradient id="tg-${size}" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#15803d"/>
-          <stop offset="100%" stop-color="#052e16"/>
-        </linearGradient>
-      </defs>
-      <g transform="translate(96,96)" fill="none" stroke="currentColor">
-        <path d="M0,0 L0,55" stroke="#15803d" stroke-width="8" stroke-linecap="round"/>
-        <path d="M0,0 L-47,-27" stroke="#15803d" stroke-width="8" stroke-linecap="round"/>
-        <path d="M0,0 L47,-27" stroke="#15803d" stroke-width="8" stroke-linecap="round"/>
-        <path d="M0,0 C-18,-25 -25,-60 0,-70 C25,-60 18,-25 0,0 Z" fill="#f0fdf4" stroke="#86efac" stroke-width="3.5"/>
-        <path d="M0,0 C22,-18 55,-12 60,12 C45,28 15,18 0,0 Z" fill="#f0fdf4" stroke="#86efac" stroke-width="3.5" transform="rotate(120)"/>
-        <path d="M0,0 C22,-18 55,-12 60,12 C45,28 15,18 0,0 Z" fill="#f0fdf4" stroke="#86efac" stroke-width="3.5" transform="rotate(240)"/>
-        <circle cx="0" cy="0" r="8" fill="#eab308"/>
-      </g>
-    </svg>
-  `;
+// Resize canvas to physical pixels
+let dpr = window.devicePixelRatio || 1;
+let width = 0;
+let height = 0;
+let screenRect = { x: 0, y: 0, w: 0, h: 0 };
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  width = rect.width;
+  height = rect.height;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  draw();
 }
 
-// Main View Template Renderers
-function renderHeader() {
-  return `
-    <div class="status-bar">
-      <span>9:41</span>
-      <div class="status-icons">
-        <svg width="15" height="11" viewBox="0 0 15 11" fill="currentColor">
-          <rect x="0" y="8" width="2.5" height="3" rx="0.5"/>
-          <rect x="4" y="5" width="2.5" height="6" rx="0.5"/>
-          <rect x="8" y="2" width="2.5" height="9" rx="0.5"/>
-          <rect x="12" y="0" width="2.5" height="11" rx="0.5"/>
-        </svg>
-        <span style="font-size:11px;">5G</span>
-        <svg width="20" height="10" viewBox="0 0 20 10" fill="none" stroke="currentColor">
-          <rect x="0.5" y="0.5" width="16" height="9" rx="2.5" stroke-width="1"/>
-          <rect x="2" y="2" width="11" height="6" rx="1.5" fill="currentColor"/>
-          <path d="M18 3.5v3" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
-      </div>
-    </div>
-    <header class="header-bar">
-      <div class="header-brand">
-        ${trilliumIcon(30)}
-        <div class="header-title-wrap">
-          <h1>Stick the Ticket</h1>
-          <div class="header-subtitle">Ontario POA Officer Reference</div>
-        </div>
-      </div>
-      <button id="theme-toggle" class="theme-btn" type="button">
-        ${state.theme === 'dark' ? 'Light' : 'Dark'}
-      </button>
-    </header>
-  `;
+window.addEventListener('resize', resize);
+
+function requestRedraw() {
+  requestAnimationFrame(draw);
 }
 
-function renderHomeView() {
-  const pinnedCount = state.savedCharges.size;
-  return `
-    <div class="home-view">
-      <div class="home-hero-mark">
-        ${trilliumIcon(72)}
-      </div>
-      <h2 class="home-hero-title">
-        Before the ticket,
-        <span>verify the elements.</span>
-      </h2>
-      <p class="home-hero-subtitle">
-        Frontline reference for Ontario POA charges, short-form wording, set fines, and statutory compliance checklists.
-      </p>
+// Drawing routines
+function draw() {
+  clickables = [];
+  ctx.save();
+  ctx.scale(dpr, dpr);
 
-      <div class="home-stats-grid">
-        <div class="stat-card">
-          <div class="stat-number">${CHARGES.length}</div>
-          <div class="stat-label">POA Charges Listed</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-number">${pinnedCount}</div>
-          <div class="stat-label">Pinned on Board</div>
-        </div>
-      </div>
+  const c = colors();
 
-      <div id="home-search-pill" class="home-search-pill">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <circle cx="11" cy="11" r="7"/>
-          <line x1="16.5" y1="16.5" x2="21" y2="21"/>
-        </svg>
-        <input id="home-search-input" type="text" placeholder="Search section, offence, or statute..." autocomplete="off">
-      </div>
+  // Background
+  ctx.fillStyle = c.page;
+  ctx.fillRect(0, 0, width, height);
 
-      <div class="home-quick-cats">
-        <button class="quick-cat-btn" data-cat="speeding">⚡ Speeding</button>
-        <button class="quick-cat-btn" data-cat="moving">🚦 Moving Violations</button>
-        <button class="quick-cat-btn" data-cat="insurance">🛡️ Insurance (CAIA)</button>
-        <button class="quick-cat-btn" data-cat="liquor">🍺 Liquor (LLCA)</button>
-        <button class="quick-cat-btn" data-cat="trespass">🚫 Trespass (TTPA)</button>
-      </div>
-    </div>
-  `;
-}
+  // Phone body mock (identical to Stick-the-Charge app.rs)
+  const margin = 16.0;
+  const phone_w = Math.max(300.0, Math.min(430.0, width - margin * 2.0));
+  const phone_h = Math.max(420.0, Math.min(phone_w * 2.02, height - margin * 2.0));
+  const phone_x = (width - phone_w) / 2.0;
+  const phone_y = (height - phone_h) / 2.0;
 
-function renderChargesList(isSavedView = false) {
-  const visible = filterCharges(isSavedView);
-  return `
-    ${!isSavedView ? `
-      <div class="search-bar-wrap">
-        <div class="search-input-box">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="7"/>
-            <line x1="16.5" y1="16.5" x2="21" y2="21"/>
-          </svg>
-          <input id="search-input" type="text" value="${state.searchQuery}" placeholder="Search number, wording, or statute...">
-        </div>
-      </div>
-      <div class="chips-wrap">
-        ${CATEGORIES.map(cat => `
-          <button class="chip-btn ${state.selectedCategory === cat.id ? 'active' : ''}" data-category="${cat.id}">
-            ${cat.label}
-          </button>
-        `).join('')}
-      </div>
-    ` : `
-      <div class="saved-header">
-        <h2>Pinned Patrol Charges</h2>
-        <p>Keep your most frequent traffic stops and common charges ready for quick element verification.</p>
-      </div>
-    `}
+  // Outer shadows & phone border
+  ctx.fillStyle = c.body;
+  roundRect(ctx, phone_x, phone_y, phone_w, phone_h, 40);
+  ctx.fill();
+  ctx.strokeStyle = '#1a241b';
+  ctx.lineWidth = 1.0;
+  ctx.stroke();
 
-    <div class="list-meta-bar">
-      <span>${isSavedView ? 'PINNED' : (state.selectedCategory.toUpperCase())} · ${visible.length} CHARGES</span>
-      <button id="sort-toggle" class="sort-btn" type="button">
-        BY ${state.sortBy === 'section' ? 'SECTION' : 'NAME'}
-      </button>
-    </div>
+  // Phone inner screen
+  const s_x = phone_x + 9.0;
+  const s_y = phone_y + 9.0;
+  const s_w = phone_w - 18.0;
+  const s_h = phone_h - 18.0;
+  screenRect = { x: s_x, y: s_y, w: s_w, h: s_h };
 
-    <div class="charge-list">
-      ${visible.length === 0 ? `
-        <div class="empty-box">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="8" x2="12" y2="12"/>
-            <line x1="12" y1="16" x2="12.01" y2="16"/>
-          </svg>
-          <h3>${isSavedView ? 'No Charges Pinned Yet' : 'No Matching POA Charges'}</h3>
-          <p>${isSavedView ? 'Tap on any charge detail and click "Pin Charge" to save it here.' : 'Try another section number or keyword.'}</p>
-        </div>
-      ` : visible.map(c => {
-        const isStuck = state.savedCharges.has(c.id);
-        return `
-          <div class="charge-card" data-id="${c.id}">
-            <div class="charge-sec">${c.statute} ${c.section}</div>
-            <div class="charge-info">
-              <div class="charge-name">${c.name}</div>
-              <div class="charge-meta">
-                <span class="badge-part">${c.part}</span>
-                ${c.setFine ? `<span>Set: $${c.setFine.toFixed(2)}</span>` : '<span style="color:#eab308;font-weight:700;">Summons</span>'}
-                ${c.points > 0 ? `<span class="badge-points">• ${c.points} Demerits</span>` : ''}
-                ${isStuck ? '<span style="color:var(--accent);font-weight:700;">📌 Pinned</span>' : ''}
-              </div>
-            </div>
-            <svg class="charge-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="9 18 15 12 9 6"/>
-            </svg>
-          </div>
-        `;
-      }).join('')}
-    </div>
-  `;
-}
+  ctx.save();
+  roundRect(ctx, s_x, s_y, s_w, s_h, 32);
+  ctx.clip();
 
-function renderDetailView() {
-  const c = CHARGES.find(item => item.id === state.selectedChargeId);
-  if (!c) return renderHomeView();
+  ctx.fillStyle = c.screen;
+  ctx.fillRect(s_x, s_y, s_w, s_h);
 
-  const isStuck = state.savedCharges.has(c.id);
-  const chargeChecks = state.checklistState[c.id] || {};
-  
-  // Element checks progress
-  const totalElements = c.elements.length;
-  const checkedElements = c.elements.filter(e => chargeChecks[e.id]).length;
-  
-  // POA statutory checklist progress
-  const totalPOA = POA_GENERAL_CHECKLIST.length;
-  const checkedPOA = POA_GENERAL_CHECKLIST.filter(p => chargeChecks[p.id]).length;
+  // Render status bar
+  drawStatusBar(ctx, s_x, s_y, s_w);
 
-  return `
-    <div class="detail-view">
-      <div class="detail-top-bar">
-        <button id="detail-back" class="back-btn" type="button">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polyline points="15 18 9 12 15 6"/>
-          </svg>
-          Back
-        </button>
-        <button id="detail-stick" class="stick-btn ${isStuck ? 'stuck' : ''}" type="button">
-          ${isStuck ? '✓ Pinned' : '+ Pin Charge'}
-        </button>
-      </div>
-
-      <div class="detail-header">
-        <div class="detail-section-code">${c.statute} Section ${c.section} ${c.subSection ? `(${c.subSection})` : ''}</div>
-        <h2 class="detail-title">${c.name}</h2>
-        <p class="detail-act-ref">${c.statute} · Official Provincial Offence Profile</p>
-      </div>
-
-      <div class="penalty-grid">
-        <div class="penalty-box">
-          <div class="p-label">Procedure</div>
-          <div class="p-val" style="font-size:13px;">${c.part}</div>
-        </div>
-        <div class="penalty-box highlight">
-          <div class="p-label">Set Fine</div>
-          <div class="p-val">${c.setFine ? `$${c.setFine.toFixed(2)}` : 'Summons'}</div>
-        </div>
-        <div class="penalty-box">
-          <div class="p-label">Demerits</div>
-          <div class="p-val">${c.points} Pts</div>
-        </div>
-      </div>
-
-      <div class="wording-box">
-        <div class="wording-title">O. Reg 950 Short-Form Certificate Wording</div>
-        <p class="wording-text">“${c.shortWording}”</p>
-      </div>
-
-      <!-- Offence Elements Checklist -->
-      <section class="checklist-section">
-        <div class="section-headline">
-          <h3>1. Essential Elements Checklist</h3>
-          <span class="checklist-progress">${checkedElements}/${totalElements} Verified</span>
-        </div>
-        <div class="checklist-items">
-          ${c.elements.map(el => {
-            const isChecked = !!chargeChecks[el.id];
-            return `
-              <div class="check-item ${isChecked ? 'checked' : ''}" data-check="${el.id}">
-                <div class="check-box">
-                  ${isChecked ? `
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <polyline points="20 6 9 17 4 12"/>
-                    </svg>
-                  ` : ''}
-                </div>
-                <div class="check-content">
-                  <div class="check-title">${el.text}</div>
-                </div>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </section>
-
-      <!-- POA Statutory Requirements Checklist -->
-      <section class="checklist-section">
-        <div class="section-headline">
-          <h3>2. POA Ticket Issuance Rules</h3>
-          <span class="checklist-progress">${checkedPOA}/${totalPOA} Done</span>
-        </div>
-        <div class="checklist-items">
-          ${POA_GENERAL_CHECKLIST.map(item => {
-            const isChecked = !!chargeChecks[item.id];
-            return `
-              <div class="check-item ${isChecked ? 'checked' : ''}" data-check="${item.id}">
-                <div class="check-box">
-                  ${isChecked ? `
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <polyline points="20 6 9 17 4 12"/>
-                    </svg>
-                  ` : ''}
-                </div>
-                <div class="check-content">
-                  <div class="check-title">${item.label}</div>
-                  <div class="check-note">${item.note}</div>
-                </div>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </section>
-
-      <!-- Procedures & Notes -->
-      <div style="background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px;">
-        <div style="font-size:10.5px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:4px;">Officer Patrol Notes</div>
-        <p style="font-size:12.5px;color:var(--ink-dim);line-height:1.45;margin:0;">${c.procedureNotes}</p>
-      </div>
-
-      <div class="statute-link-box">
-        <a href="${c.statuteUrl}" target="_blank" rel="noopener noreferrer">
-          View official Ontario statute
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-            <polyline points="15 3 21 3 21 9"/>
-            <line x1="10" y1="14" x2="21" y2="3"/>
-          </svg>
-        </a>
-      </div>
-    </div>
-  `;
-}
-
-function renderBottomNav() {
-  return `
-    <nav class="bottom-nav">
-      <button class="nav-btn ${state.currentTab === 'home' ? 'active' : ''}" data-tab="home">
-        <svg viewBox="0 0 24 24">
-          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-          <polyline points="9 22 9 12 15 12 15 22"/>
-        </svg>
-        Home
-      </button>
-      <button class="nav-btn ${state.currentTab === 'charges' ? 'active' : ''}" data-tab="charges">
-        <svg viewBox="0 0 24 24">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="16" y1="13" x2="8" y2="13"/>
-          <line x1="16" y1="17" x2="8" y2="17"/>
-          <polyline points="10 9 9 9 8 9"/>
-        </svg>
-        POA Codes
-      </button>
-      <button class="nav-btn ${state.currentTab === 'saved' ? 'active' : ''}" data-tab="saved">
-        <svg viewBox="0 0 24 24">
-          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
-        </svg>
-        Pinned (${state.savedCharges.size})
-      </button>
-    </nav>
-  `;
-}
-
-function render() {
-  let mainContent = '';
-  if (state.selectedChargeId) {
-    mainContent = renderDetailView();
-  } else if (state.currentTab === 'home') {
-    mainContent = renderHomeView();
-  } else if (state.currentTab === 'charges') {
-    mainContent = renderChargesList(false);
-  } else if (state.currentTab === 'saved') {
-    mainContent = renderChargesList(true);
+  if (openChargeIdx !== null) {
+    drawDetailScreen(ctx, s_x, s_y, s_w, s_h);
+  } else {
+    drawTitleBar(ctx, s_x, s_y + 44.0, s_w);
+    if (tab === 'home') {
+      drawHomeScreen(ctx, s_x, s_y, s_w, s_h);
+    } else if (tab === 'charges') {
+      drawChargesScreen(ctx, s_x, s_y, s_w, s_h, false);
+    } else if (tab === 'saved') {
+      drawChargesScreen(ctx, s_x, s_y, s_w, s_h, true);
+    }
+    drawNavBar(ctx, s_x, s_y, s_w, s_h);
   }
 
-  app.innerHTML = `
-    ${renderHeader()}
-    <div id="view-container" class="view-container">
-      ${mainContent}
-    </div>
-    ${renderBottomNav()}
-  `;
+  ctx.restore();
+  ctx.restore();
 
-  attachEventHandlers();
+  if (loading) loading.textContent = '';
 }
 
-function attachEventHandlers() {
-  // Theme Toggle
-  const themeBtn = document.querySelector('#theme-toggle');
-  if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
 
-  // Bottom Navigation
-  document.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.currentTab = btn.dataset.tab;
-      state.selectedChargeId = null;
-      render();
-    });
+function drawStatusBar(ctx, x, y, w) {
+  const c = colors();
+  ctx.font = '600 12px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.textAlign = 'left';
+  ctx.fillText('9:41', x + 30.0, y + 32.0);
+
+  // Dynamic Island Notch
+  ctx.fillStyle = '#000000';
+  roundRect(ctx, x + w / 2 - 46.0, y + 6.0, 92.0, 22.0, 11);
+  ctx.fill();
+
+  // Battery & Signal bars
+  const rx = x + w - 30.0;
+  ctx.fillStyle = c.ink;
+  roundRect(ctx, rx - 20.0, y + 24.0, 18.0, 9.0, 2.5);
+  ctx.strokeStyle = c.ink_dim;
+  ctx.stroke();
+  ctx.fillRect(rx - 18.0, y + 26.0, 10.0, 5.0);
+}
+
+function drawTitleBar(ctx, x, y, w) {
+  const c = colors();
+  // Trillium icon
+  drawLeafShapes(ctx, x + PAD + 14.0, y + 22.0, 28.0, c.green);
+
+  ctx.font = `700 ${w < 340.0 ? 16.5 : 19.0}px system-ui, -apple-system, sans-serif`;
+  ctx.fillStyle = c.ink;
+  ctx.textAlign = 'left';
+  ctx.fillText('Stick the Ticket', x + PAD + 36.0, y + 21.0);
+
+  ctx.font = '700 8.5px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_faint;
+  ctx.fillText('ONTARIO PROVINCIAL OFFENCES ACT', x + PAD + 36.5, y + 34.0);
+
+  // Dark/Light switch button
+  const sw_w = 58.0;
+  const sw_h = 32.0;
+  const sw_x = x + w - PAD - sw_w;
+  const sw_y = y + 8.0;
+
+  ctx.fillStyle = c.surface;
+  roundRect(ctx, sw_x, sw_y, sw_w, sw_h, 9);
+  ctx.fill();
+  ctx.strokeStyle = c.line;
+  ctx.stroke();
+
+  ctx.font = '600 12px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.textAlign = 'center';
+  ctx.fillText(isDark ? 'Light' : 'Dark', sw_x + sw_w / 2, sw_y + 20.5);
+
+  addClickable({ x: sw_x, y: sw_y, w: sw_w, h: sw_h }, () => toggleTheme());
+}
+
+function drawHomeScreen(ctx, x, y, w, h) {
+  const c = colors();
+  const cx = x + w / 2;
+  const leaf_y = y + Math.max(160.0, h * 0.25);
+
+  // Hero Trillium Emblem
+  drawLeafShapes(ctx, cx, leaf_y, 44.0, c.accent);
+
+  // Hero titles (identical typography to Stick-the-Charge)
+  ctx.font = '700 27px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.textAlign = 'center';
+  ctx.fillText('Before the ticket,', cx, leaf_y + 46.0);
+
+  ctx.fillStyle = c.green;
+  ctx.fillText('check the Code.', cx, leaf_y + 80.0);
+
+  ctx.font = '13px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_faint;
+  ctx.fillText('Find a POA charge. Review the essential elements.', cx, leaf_y + 118.0);
+
+  // Search pill
+  const pill_w = Math.max(120.0, w - PAD * 2.0);
+  const pill_h = 50.0;
+  const pill_y = y + h - NAV_H - 34.0;
+  const pill_x = cx - pill_w / 2;
+
+  ctx.fillStyle = c.surface;
+  roundRect(ctx, pill_x, pill_y, pill_w, pill_h, 25);
+  ctx.fill();
+  ctx.strokeStyle = c.line;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // Search icon
+  const ic_x = pill_x + 24.0;
+  const ic_y = pill_y + pill_h / 2;
+  ctx.beginPath();
+  ctx.arc(ic_x, ic_y - 1.0, 5.5, 0, Math.PI * 2);
+  ctx.strokeStyle = c.ink_faint;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ic_x + 4.0, ic_y + 3.0);
+  ctx.lineTo(ic_x + 8.0, ic_y + 7.0);
+  ctx.stroke();
+
+  // Search text
+  ctx.font = '13.5px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_faint;
+  ctx.textAlign = 'left';
+  ctx.fillText(query ? query : 'Offence, keyword or section', pill_x + 42.0, pill_y + 31.0);
+
+  addClickable({ x: pill_x, y: pill_y, w: pill_w, h: pill_h }, () => {
+    tab = 'charges';
+    requestRedraw();
   });
+}
 
-  // Home search pill
-  const homePill = document.querySelector('#home-search-pill');
-  if (homePill) {
-    homePill.addEventListener('click', () => {
-      state.currentTab = 'charges';
-      render();
-      const input = document.querySelector('#search-input');
-      if (input) input.focus();
-    });
-  }
+function drawChargesScreen(ctx, x, y, w, h, stuckOnly = false) {
+  const c = colors();
+  let curY = y + 44.0 + 52.0;
 
-  // Home Quick Categories
-  document.querySelectorAll('.quick-cat-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.currentTab = 'charges';
-      state.selectedCategory = btn.dataset.cat;
-      render();
-    });
-  });
+  if (!stuckOnly) {
+    // Search Box
+    const s_box_w = w - PAD * 2.0;
+    const s_box_h = 40.0;
+    const s_box_x = x + PAD;
 
-  // Search input in Charges view
-  const searchInput = document.querySelector('#search-input');
-  if (searchInput) {
-    searchInput.addEventListener('input', e => {
-      state.searchQuery = e.target.value;
-      const listContainer = document.querySelector('.charge-list');
-      if (listContainer) {
-        listContainer.innerHTML = filterCharges(false).map(c => `
-          <div class="charge-card" data-id="${c.id}">
-            <div class="charge-sec">${c.statute} ${c.section}</div>
-            <div class="charge-info">
-              <div class="charge-name">${c.name}</div>
-              <div class="charge-meta">
-                <span class="badge-part">${c.part}</span>
-                ${c.setFine ? `<span>Set: $${c.setFine.toFixed(2)}</span>` : '<span style="color:#eab308;font-weight:700;">Summons</span>'}
-                ${c.points > 0 ? `<span class="badge-points">• ${c.points} Demerits</span>` : ''}
-              </div>
-            </div>
-            <svg class="charge-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="9 18 15 12 9 6"/>
-            </svg>
-          </div>
-        `).join('');
-        // Re-attach card clicks
-        attachCardClicks();
+    ctx.fillStyle = c.surface;
+    roundRect(ctx, s_box_x, curY, s_box_w, s_box_h, 12);
+    ctx.fill();
+    ctx.strokeStyle = c.line;
+    ctx.lineWidth = 1.0;
+    ctx.stroke();
+
+    const ic_x = s_box_x + 18.0;
+    const ic_y = curY + s_box_h / 2;
+    ctx.beginPath();
+    ctx.arc(ic_x, ic_y - 1.0, 5.5, 0, Math.PI * 2);
+    ctx.strokeStyle = c.ink_dim;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ic_x + 4.0, ic_y + 3.0);
+    ctx.lineTo(ic_x + 8.0, ic_y + 7.0);
+    ctx.stroke();
+
+    ctx.font = '13px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = query ? c.ink : c.ink_faint;
+    ctx.textAlign = 'left';
+    ctx.fillText(query ? query : 'Search a number or charge', s_box_x + 36.0, curY + 25.0);
+
+    addClickable({ x: s_box_x, y: curY, w: s_box_w, h: s_box_h }, () => {
+      const input = prompt('Search POA section, offence, or keyword:', query);
+      if (input !== null) {
+        query = input;
+        requestRedraw();
       }
     });
-  }
 
-  // Category Chips
-  document.querySelectorAll('.chip-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.selectedCategory = btn.dataset.category;
-      render();
-    });
-  });
+    curY += s_box_h + 8.0;
 
-  // Sort toggle
-  const sortBtn = document.querySelector('#sort-toggle');
-  if (sortBtn) {
-    sortBtn.addEventListener('click', () => {
-      state.sortBy = state.sortBy === 'section' ? 'name' : 'section';
-      render();
-    });
-  }
+    // Category chips
+    let chipX = x + PAD;
+    const chipH = 28.0;
+    const categories = [{ id: null, label: 'All' }, ...CATEGORIES.filter(c => c.id !== 'all')];
 
-  // Charge row clicks
-  attachCardClicks();
+    for (const cat of categories) {
+      ctx.font = '12px system-ui, -apple-system, sans-serif';
+      const textW = ctx.measureText(cat.label).width;
+      const chipW = textW + 22.0;
 
-  // Detail View: Back button
-  const backBtn = document.querySelector('#detail-back');
-  if (backBtn) {
-    backBtn.addEventListener('click', () => {
-      state.selectedChargeId = null;
-      render();
-    });
-  }
+      if (chipX + chipW > x + w - PAD) break;
 
-  // Detail View: Stick / Pin charge button
-  const stickBtn = document.querySelector('#detail-stick');
-  if (stickBtn) {
-    stickBtn.addEventListener('click', () => {
-      toggleSaved(state.selectedChargeId);
-    });
-  }
-
-  // Detail View: Checkbox clicks
-  document.querySelectorAll('.check-item').forEach(item => {
-    item.addEventListener('click', () => {
-      const checkId = item.dataset.check;
-      if (state.selectedChargeId && checkId) {
-        toggleCheck(state.selectedChargeId, checkId);
+      const isSel = (cat.id === null && filter === null) || filter === cat.id;
+      ctx.fillStyle = isSel ? c.ink : c.surface;
+      roundRect(ctx, chipX, curY, chipW, chipH, 14);
+      ctx.fill();
+      if (!isSel) {
+        ctx.strokeStyle = c.line;
+        ctx.stroke();
       }
-    });
+
+      ctx.fillStyle = isSel ? c.screen : c.ink_dim;
+      ctx.textAlign = 'center';
+      ctx.fillText(cat.label, chipX + chipW / 2, curY + 18.5);
+
+      addClickable({ x: chipX, y: curY, w: chipW, h: chipH }, () => {
+        filter = cat.id;
+        requestRedraw();
+      });
+
+      chipX += chipW + 7.0;
+    }
+
+    curY += chipH + 8.0;
+  }
+
+  // Caption row with count and Sort toggle
+  const listItems = visibleCharges(stuckOnly);
+  const headY = curY;
+  ctx.font = '700 9.5px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_faint;
+  ctx.textAlign = 'left';
+  const caption = stuckOnly
+    ? `STUCK · ${listItems.length}`
+    : `${filter ? filter.toUpperCase() : 'ALL POA CHARGES'} · ${listItems.length}`;
+  ctx.fillText(caption, x + PAD, headY + 16.0);
+
+  // Sort button
+  const sortW = 76.0;
+  const sortH = 22.0;
+  const sortX = x + w - PAD - sortW;
+  const sortY = headY + 4.0;
+  ctx.fillStyle = c.surface;
+  roundRect(ctx, sortX, sortY, sortW, sortH, 9);
+  ctx.fill();
+  ctx.font = '700 8.5px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_dim;
+  ctx.textAlign = 'center';
+  ctx.fillText(sort === 'number' ? 'BY NUMBER' : 'BY NAME', sortX + sortW / 2, sortY + 14.5);
+
+  addClickable({ x: sortX, y: sortY, w: sortW, h: sortH }, () => {
+    sort = sort === 'number' ? 'name' : 'number';
+    requestRedraw();
   });
+
+  curY += 28.0;
+
+  // List Rows
+  const listBottom = y + h - NAV_H - 8.0;
+  const maxListH = listBottom - curY;
+
+  ctx.save();
+  ctx.rect(x, curY, w, maxListH);
+  ctx.clip();
+
+  let rowY = curY - listScrollY;
+
+  if (listItems.length === 0) {
+    const cy = curY + 70.0;
+    drawLeafShapes(ctx, x + w / 2, cy - 20.0, 36.0, c.line);
+    ctx.font = '600 13px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = c.ink_dim;
+    ctx.textAlign = 'center';
+    ctx.fillText(stuckOnly ? 'Nothing stuck yet' : 'No charge matches that', x + w / 2, cy + 24.0);
+    ctx.font = '11px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = c.ink_faint;
+    ctx.fillText(stuckOnly ? 'Open a charge and stick it here' : 'Try another number or word', x + w / 2, cy + 42.0);
+  } else {
+    for (const item of listItems) {
+      const isStuck = stuck.has(item.id);
+      const rowW = w - PAD * 2.0;
+      const rowH = 60.0;
+      const rowX = x + PAD;
+
+      if (rowY + rowH >= curY && rowY <= listBottom) {
+        ctx.fillStyle = c.surface;
+        roundRect(ctx, rowX, rowY, rowW, rowH, 13);
+        ctx.fill();
+        ctx.strokeStyle = c.line;
+        ctx.lineWidth = 1.0;
+        ctx.stroke();
+
+        // Section number
+        ctx.font = '700 13px ui-monospace, SFMono-Regular, monospace';
+        ctx.fillStyle = isStuck ? c.green : c.ink;
+        ctx.textAlign = 'left';
+        ctx.fillText(item.section, rowX + 14.0, rowY + 28.0);
+
+        // Name
+        ctx.font = '600 14px system-ui, -apple-system, sans-serif';
+        ctx.fillStyle = c.ink;
+        ctx.fillText(item.name.length > 25 ? item.name.slice(0, 24) + '…' : item.name, rowX + 78.0, rowY + 26.0);
+
+        // Category caption & act
+        ctx.font = '700 8px system-ui, -apple-system, sans-serif';
+        ctx.fillStyle = c.ink_faint;
+        ctx.fillText(`${item.statute} · ONTARIO PROVINCIAL OFFENCE`, rowX + 78.0, rowY + 46.0);
+
+        // Stuck indicator pin mark
+        if (isStuck) {
+          drawLeafShapes(ctx, rowX + rowW - 36.0, rowY + 28.0, 14.0, c.green);
+        }
+
+        // Chevron arrow
+        ctx.beginPath();
+        const arrX = rowX + rowW - 18.0;
+        const arrY = rowY + 28.0;
+        ctx.moveTo(arrX - 3.0, arrY - 5.0);
+        ctx.lineTo(arrX + 2.0, arrY);
+        ctx.lineTo(arrX - 3.0, arrY + 5.0);
+        ctx.strokeStyle = c.ink_faint;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        addClickable({ x: rowX, y: rowY, w: rowW, h: rowH }, () => {
+          openChargeIdx = item.originalIdx;
+          detailScrollY = 0;
+          requestRedraw();
+        });
+      }
+      rowY += rowH + 8.0;
+    }
+  }
+
+  ctx.restore();
 }
 
-function attachCardClicks() {
-  document.querySelectorAll('.charge-card').forEach(card => {
-    card.addEventListener('click', () => {
-      state.selectedChargeId = card.dataset.id;
-      render();
+function drawDetailScreen(ctx, x, y, w, h) {
+  const c = colors();
+  const charge = CHARGES[openChargeIdx];
+  const isStuck = stuck.has(charge.id);
+  const innerW = w - PAD * 2.0;
+
+  // Header back bar
+  const barY = y + 10.0;
+  const backX = x + PAD + 16.0;
+  const backY = barY + 22.0;
+
+  // Back circle button
+  ctx.fillStyle = c.surface;
+  ctx.beginPath();
+  ctx.arc(backX, backY, 17.0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(backX + 2.5, backY - 5.0);
+  ctx.lineTo(backX - 3.0, backY);
+  ctx.lineTo(backX + 2.5, backY + 5.0);
+  ctx.strokeStyle = c.ink_dim;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  addClickable({ x: backX - 17.0, y: backY - 17.0, w: 34.0, h: 34.0 }, () => {
+    openChargeIdx = null;
+    requestRedraw();
+  });
+
+  // Center Trillium
+  drawLeafShapes(ctx, x + w / 2, backY, 32.0, c.green);
+
+  // Save / Stick button (top right)
+  const saveW = 76.0;
+  const saveH = 44.0;
+  const saveX = x + w - PAD - saveW;
+  const saveY = barY;
+
+  ctx.font = '600 14px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.textAlign = 'center';
+  ctx.fillText(isStuck ? 'Saved' : 'Save', saveX + saveW / 2, saveY + 26.0);
+
+  addClickable({ x: saveX, y: saveY, w: saveW, h: saveH }, () => {
+    if (stuck.has(charge.id)) {
+      stuck.delete(charge.id);
+    } else {
+      stuck.add(charge.id);
+    }
+    saveStuck();
+    requestRedraw();
+  });
+
+  // Scrollable Content
+  const contentTop = barY + 48.0;
+  const contentH = y + h - contentTop - 14.0;
+
+  ctx.save();
+  ctx.rect(x, contentTop, w, contentH);
+  ctx.clip();
+
+  let curY = contentTop + 10.0 - detailScrollY;
+
+  // Charge Title block
+  ctx.font = '700 24px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.textAlign = 'left';
+  wrapText(ctx, charge.name, x + PAD, curY, innerW, 28.0);
+  curY += 60.0;
+
+  // Section subtitle
+  ctx.font = '12px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_dim;
+  ctx.fillText(`${charge.statute} Section ${charge.section} · officer compliance draft`, x + PAD, curY);
+  curY += 24.0;
+
+  // Essential Elements Points (with green numbered highlights)
+  const chargeChecks = checkedItems[charge.id] || {};
+
+  charge.elements.forEach((el, index) => {
+    const isChecked = !!chargeChecks[el.id];
+    const ptX = x + PAD;
+    const ptY = curY;
+
+    // Checkbox / Number highlight
+    ctx.font = '700 14px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = c.green;
+    ctx.textAlign = 'left';
+    ctx.fillText(`${index + 1}.`, ptX, ptY);
+
+    // Box toggle
+    const chkX = ptX + 22.0;
+    ctx.strokeStyle = isChecked ? c.green : c.ink_faint;
+    ctx.lineWidth = 1.6;
+    roundRect(ctx, chkX, ptY - 12.0, 16.0, 16.0, 4);
+    if (isChecked) {
+      ctx.fillStyle = c.green;
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(chkX + 4.0, ptY - 4.0);
+      ctx.lineTo(chkX + 7.0, ptY - 1.0);
+      ctx.lineTo(chkX + 12.0, ptY - 8.0);
+      ctx.stroke();
+    } else {
+      ctx.stroke();
+    }
+
+    addClickable({ x: chkX - 4.0, y: ptY - 16.0, w: 24.0, h: 24.0 }, () => {
+      if (!checkedItems[charge.id]) checkedItems[charge.id] = {};
+      checkedItems[charge.id][el.id] = !checkedItems[charge.id][el.id];
+      saveChecks();
+      requestRedraw();
+    });
+
+    // Element text
+    ctx.font = '14px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = isChecked ? c.ink_dim : c.ink;
+    const lines = wrapText(ctx, el.text, ptX + 46.0, ptY, innerW - 46.0, 18.0);
+    curY += Math.max(26.0, lines * 18.0 + 8.0);
+  });
+
+  curY += 16.0;
+
+  // Short-form Wording note
+  ctx.font = '700 12px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.fillText('Regulation Short-Form Wording (O. Reg. 950)', x + PAD, curY);
+  curY += 16.0;
+
+  ctx.font = 'italic 13px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_dim;
+  wrapText(ctx, `“${charge.shortWording}”`, x + PAD, curY, innerW, 18.0);
+  curY += 36.0;
+
+  // Penalty / Fine Section (matching Stick the Charge layout)
+  ctx.font = '700 12px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.fillText(`Penalty · ${charge.part}`, x + PAD, curY);
+  curY += 18.0;
+
+  ctx.font = '14px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.fillText(
+    charge.setFine
+      ? `• Set fine: $${charge.setFine.toFixed(2)} (Total payable: $${charge.totalPayable.toFixed(2)})`
+      : `• ${charge.totalPayable}`,
+    x + PAD,
+    curY
+  );
+  curY += 18.0;
+
+  if (charge.points > 0) {
+    ctx.fillText(`• Demerit points: ${charge.points} points upon conviction`, x + PAD, curY);
+    curY += 18.0;
+  }
+
+  // Statutory Divider
+  curY += 14.0;
+  ctx.beginPath();
+  ctx.moveTo(x + PAD, curY);
+  ctx.lineTo(x + PAD + innerW, curY);
+  ctx.strokeStyle = c.line;
+  ctx.lineWidth = 1.0;
+  ctx.stroke();
+
+  // Green vertical bar highlight
+  ctx.fillStyle = c.green;
+  roundRect(ctx, x + PAD, curY + 12.0, 3.0, 28.0, 2);
+  ctx.fill();
+
+  ctx.font = '700 16px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  ctx.fillText('Statutory text', x + PAD + 12.0, curY + 24.0);
+
+  ctx.font = '11px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_faint;
+  ctx.fillText('The wording of the law', x + PAD + 12.0, curY + 38.0);
+  curY += 56.0;
+
+  // Official Statute Link
+  ctx.font = '600 12px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.link;
+  ctx.fillText(`Official ${charge.statute} Statute Section ↗`, x + PAD, curY);
+  addClickable({ x: x + PAD, y: curY - 14.0, w: 200.0, h: 20.0 }, () => {
+    window.open(charge.statuteUrl, '_blank');
+  });
+  curY += 24.0;
+
+  // Statute Text
+  ctx.font = '12px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink_dim;
+  ctx.fillText(`${charge.statute} · Section ${charge.section}`, x + PAD, curY);
+  curY += 16.0;
+
+  ctx.font = '12.5px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = c.ink;
+  wrapText(ctx, charge.summary, x + PAD, curY, innerW, 18.0);
+  curY += 50.0;
+
+  ctx.restore();
+}
+
+function drawNavBar(ctx, x, y, w, h) {
+  const c = colors();
+  const barY = y + h - NAV_H;
+
+  // Nav surface
+  ctx.fillStyle = c.screen;
+  ctx.fillRect(x, barY, w, NAV_H);
+  ctx.beginPath();
+  ctx.moveTo(x, barY);
+  ctx.lineTo(x + w, barY);
+  ctx.strokeStyle = c.line;
+  ctx.lineWidth = 1.0;
+  ctx.stroke();
+
+  const items = [
+    { id: 'home', label: 'Home' },
+    { id: 'charges', label: 'POA Code' },
+    { id: 'saved', label: 'Saved' }
+  ];
+  const itemW = w / items.length;
+
+  items.forEach((item, i) => {
+    const itemX = x + itemW * i;
+    const cx = itemX + itemW / 2;
+    const cy = barY + 19.0;
+    const active = tab === item.id;
+    const color = active ? c.green : c.ink_faint;
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+
+    if (item.id === 'home') {
+      ctx.beginPath();
+      ctx.moveTo(cx - 7.5, cy + 1.0);
+      ctx.lineTo(cx, cy - 6.5);
+      ctx.lineTo(cx + 7.5, cy + 1.0);
+      ctx.stroke();
+      ctx.strokeRect(cx - 5.5, cy + 0.5, 11.0, 7.5);
+      ctx.strokeRect(cx - 2.0, cy + 3.5, 4.0, 4.5);
+    } else if (item.id === 'charges') {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - 5.0);
+      ctx.lineTo(cx, cy + 6.0);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - 5.0);
+      ctx.lineTo(cx - 4.0, cy - 6.0);
+      ctx.lineTo(cx - 7.5, cy - 4.5);
+      ctx.lineTo(cx - 7.5, cy + 4.5);
+      ctx.lineTo(cx - 4.0, cy + 4.0);
+      ctx.lineTo(cx, cy + 6.0);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - 5.0);
+      ctx.lineTo(cx + 4.0, cy - 6.0);
+      ctx.lineTo(cx + 7.5, cy - 4.5);
+      ctx.lineTo(cx + 7.5, cy + 4.5);
+      ctx.lineTo(cx + 4.0, cy + 4.0);
+      ctx.lineTo(cx, cy + 6.0);
+      ctx.stroke();
+    } else if (item.id === 'saved') {
+      ctx.beginPath();
+      ctx.moveTo(cx - 5.5, cy - 6.5);
+      ctx.lineTo(cx + 5.5, cy - 6.5);
+      ctx.lineTo(cx + 5.5, cy + 6.5);
+      ctx.lineTo(cx, cy + 3.0);
+      ctx.lineTo(cx - 5.5, cy + 6.5);
+      ctx.closePath();
+      ctx.stroke();
+    }
+
+    ctx.font = '700 9.5px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.fillText(item.label, cx, cy + 15.0);
+
+    addClickable({ x: itemX, y: barY, w: itemW, h: NAV_H }, () => {
+      tab = item.id;
+      openChargeIdx = null;
+      listScrollY = 0;
+      requestRedraw();
     });
   });
+
+  // Home Bar pill indicator
+  ctx.fillStyle = c.ink_dim;
+  roundRect(ctx, x + w / 2 - 67.0, y + h - 8.0, 134.0, 4.0, 2);
+  ctx.fill();
 }
+
+function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = text.split(' ');
+  let line = '';
+  let linesCount = 1;
+  let testY = y;
+
+  for (let n = 0; n < words.length; n++) {
+    const testLine = line + words[n] + ' ';
+    const metrics = ctx.measureText(testLine);
+    if (metrics.width > maxWidth && n > 0) {
+      ctx.fillText(line, x, testY);
+      line = words[n] + ' ';
+      testY += lineHeight;
+      linesCount++;
+    } else {
+      line = testLine;
+    }
+  }
+  ctx.fillText(line, x, testY);
+  return linesCount;
+}
+
+function handlePointerAt(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+
+  for (let i = clickables.length - 1; i >= 0; i--) {
+    const c = clickables[i];
+    if (x >= c.rect.x && x <= c.rect.x + c.rect.w && y >= c.rect.y && y <= c.rect.y + c.rect.h) {
+      c.action();
+      break;
+    }
+  }
+}
+
+canvas.addEventListener('click', e => {
+  handlePointerAt(e.clientX, e.clientY);
+});
+
+// Touch and Wheel Scrolling
+let touchStartY = 0;
+canvas.addEventListener('touchstart', e => {
+  touchStartY = e.touches[0].clientY;
+}, { passive: true });
+
+canvas.addEventListener('touchmove', e => {
+  const touchY = e.touches[0].clientY;
+  const deltaY = touchStartY - touchY;
+  touchStartY = touchY;
+
+  if (openChargeIdx !== null) {
+    detailScrollY = Math.max(0, detailScrollY + deltaY);
+  } else if (tab === 'charges' || tab === 'saved') {
+    listScrollY = Math.max(0, listScrollY + deltaY);
+  }
+  requestRedraw();
+}, { passive: true });
+
+canvas.addEventListener('wheel', e => {
+  if (openChargeIdx !== null) {
+    detailScrollY = Math.max(0, detailScrollY + e.deltaY);
+  } else if (tab === 'charges' || tab === 'saved') {
+    listScrollY = Math.max(0, listScrollY + e.deltaY);
+  }
+  requestRedraw();
+}, { passive: true });
 
 // Initial Render
-render();
+resize();
 
-// --- Evidence Photos Dialog Management ---
+// --- Evidence Photos Dialog Management (Exact same as Stick-the-Charge) ---
 const dialog = document.querySelector('#photos');
 const grid = document.querySelector('#photo-grid');
 const status = document.querySelector('#photo-status');
@@ -588,8 +955,8 @@ async function showPhotos() {
     const photos = await listPhotos();
     if (!photos.length) {
       const empty = document.createElement('p');
-      empty.className = 'empty-photos';
-      empty.textContent = 'No evidence photos taken yet. Photos are kept privately in this browser.';
+      empty.className = 'empty';
+      empty.textContent = 'No photos yet. Take or add one to keep it here.';
       grid.append(empty);
       return;
     }
@@ -600,13 +967,13 @@ async function showPhotos() {
       item.className = 'photo';
       const img = document.createElement('img');
       img.src = url;
-      img.alt = `Evidence photo saved ${new Date(photo.createdAt).toLocaleString()}`;
+      img.alt = `Photo saved ${new Date(photo.createdAt).toLocaleString()}`;
       const actions = document.createElement('div');
       actions.className = 'photo-actions';
       const download = document.createElement('a');
       download.href = url;
       const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[photo.blob.type] || 'image';
-      download.download = `stick-the-ticket-evidence-${photo.id}.${ext}`;
+      download.download = `stick-the-ticket-${photo.id}.${ext}`;
       download.textContent = 'Download';
       const remove = document.createElement('button');
       remove.type = 'button';
@@ -617,7 +984,7 @@ async function showPhotos() {
           status.textContent = 'Photo deleted.';
           await showPhotos();
         } catch {
-          status.textContent = 'Could not delete the photo.';
+          status.textContent = 'Could not delete the photo. Please try again.';
         }
       });
       actions.append(download, remove);
@@ -655,7 +1022,7 @@ openCamera.addEventListener('click', async () => {
   status.textContent = 'Opening camera…';
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Camera unavailable. Use image chooser below.');
+      throw new Error('Camera unavailable. Use the phone camera or image chooser below.');
     }
     const nextStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' } },
@@ -677,21 +1044,21 @@ openCamera.addEventListener('click', async () => {
     if (request !== cameraRequest) return;
     stopCamera();
     status.textContent = error.name === 'NotAllowedError'
-      ? 'Camera permission denied. Use the image file chooser below.'
-      : (error.message || 'Could not open camera.');
+      ? 'Camera permission was denied. Use the image chooser below or enable camera access.'
+      : (error.message || 'Could not open the camera. Use the image chooser below.');
   }
 });
 
 capture.addEventListener('click', async () => {
   capture.disabled = true;
-  status.textContent = 'Saving evidence photo…';
+  status.textContent = 'Saving photo…';
   try {
     await capturePhoto(preview);
     stopCamera();
-    status.textContent = 'Evidence photo saved on device.';
+    status.textContent = 'Photo saved on this device.';
     await showPhotos();
   } catch (error) {
-    status.textContent = error.message || 'Could not save photo.';
+    status.textContent = error.message || 'Could not save the photo. Please try again.';
   } finally {
     capture.disabled = false;
   }
@@ -701,13 +1068,13 @@ camera.addEventListener('change', async () => {
   const file = camera.files?.[0];
   if (!file) return;
   camera.disabled = true;
-  status.textContent = 'Saving image…';
+  status.textContent = 'Saving photo…';
   try {
     await savePhoto(file);
-    status.textContent = 'Image saved on device.';
+    status.textContent = 'Photo saved on this device.';
     await showPhotos();
   } catch (error) {
-    status.textContent = error.message || 'Could not save image.';
+    status.textContent = error.message || 'Could not save the photo. Please try again.';
   } finally {
     camera.disabled = false;
     camera.value = '';
