@@ -5,9 +5,9 @@ dialog{width:min(100% - 24px,456px);max-height:min(80dvh,720px);border:1px solid
 .take-photo{width:100%;border:0}.camera-preview{margin-top:12px}.camera-preview[hidden]{display:none}.camera-preview video{display:block;width:100%;max-height:35dvh;object-fit:contain;border:1px solid #3c4f40;border-radius:12px;background:#000;margin-bottom:10px}.camera-cancel,.choose-photo{display:grid;place-items:center;width:100%;min-height:44px;margin-top:10px;border:1px solid #4a614e;border-radius:12px;background:#18221a;color:#fff;font-size:13px}.choose-photo{cursor:pointer;padding:8px;text-align:center}.choose-photo input{position:absolute;width:1px;height:1px;opacity:0}.choose-photo:focus-within{outline:3px solid #fff;outline-offset:3px}
 [hidden]{display:none!important}.camera-active .intro,.camera-active .choose-photo,.camera-active #photo-grid{display:none}
 
-/* The browser controls follow the same high-contrast palette as the canvas interface, with subtle green highlights. */
-:root{color-scheme:light;--page:#eaefe9;--panel:#fff;--surface:#f0f5ef;--surface-hover:#e3eae2;--ink:#141f17;--muted:#2c3a2f;--border:#9eb2a2;--focus:#15803d;--link:#166534;--danger:#a6152b;--brand:#1b7a42;background:var(--page);color:var(--ink)}
-:root[data-theme="dark"]{color-scheme:dark;--page:#070a08;--panel:#0e1410;--surface:#18221a;--surface-hover:#243227;--ink:#f7faf8;--muted:#dde5de;--border:#5c7361;--focus:#4ade80;--link:#86efac;--danger:#ff9aa7;--brand:#22c55e}
+/* The browser controls follow the same high-contrast palette as the canvas interface, with refined deep green highlights. */
+:root{color-scheme:light;--page:#e7ece6;--panel:#fff;--surface:#edf3ec;--surface-hover:#dfebd0;--ink:#111a13;--muted:#253228;--border:#96aa9a;--focus:#106a35;--link:#115228;--danger:#a6152b;--brand:#126332;background:var(--page);color:var(--ink)}
+:root[data-theme="dark"]{color-scheme:dark;--page:#050806;--panel:#0a100c;--surface:#131c15;--surface-hover:#1c291f;--ink:#f5faf6;--muted:#d5e0d7;--border:#4a6350;--focus:#2ea85c;--link:#34bc67;--danger:#ff9aa7;--brand:#1ba14e}
 .shell,.camera-bar{background:var(--page)}
 .camera-bar button,.dialog-head button,.camera-cancel,.choose-photo{background:var(--surface);border-color:var(--border);color:var(--ink)}
 .camera-bar button:hover,.dialog-head button:hover,.camera-cancel:hover,.choose-photo:hover{background:var(--surface-hover)}

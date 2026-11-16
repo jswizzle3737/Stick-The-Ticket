@@ -8,7 +8,12 @@ const files = [
   'legislation_data.mjs',
   'sw.js',
   'manifest.webmanifest',
-  'icon.svg'
+  'icon.svg',
+  'logo-dark.png',
+  'logo-light.png',
+  'logo-white.png',
+  'icon-192.png',
+  'icon-512.png'
 ];
 
 for (const file of files) {

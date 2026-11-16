@@ -10,37 +10,37 @@ const loading = document.querySelector('#loading');
 const NAV_H = 64.0;
 const PAD = 18.0;
 
-// High contrast palette with subtle green tint & highlights
+// High contrast palette with refined deep green tint & darker green highlights
 const THEME = {
   light: {
-    page: '#eaefe9',
-    body: '#141f17',
-    screen: '#f0f5ef',
+    page: '#e7ece6',
+    body: '#111a13',
+    screen: '#edf3ec',
     surface: '#ffffff',
-    surface_hover: '#e3eae2',
-    surface_press: '#d5e0d3',
-    line: '#cfded1',
-    ink: '#141f17',
-    ink_dim: '#3e5242',
-    ink_faint: '#607965',
-    accent: '#1b7a42',   // Forest green accent
-    green: '#1b7a42',    // Brand green (matching crimson in charge)
-    link: '#166534'
+    surface_hover: '#dfebd0',
+    surface_press: '#d2e0cf',
+    line: '#cbd9cc',
+    ink: '#111a13',
+    ink_dim: '#324235',
+    ink_faint: '#546b58',
+    accent: '#126332',   // Refined darker green accent
+    green: '#126332',    // Brand green (darker forest green)
+    link: '#115228'
   },
   dark: {
-    page: '#070a08',
+    page: '#050806',
     body: '#000000',
-    screen: '#0f1711',
-    surface: '#18241b',
-    surface_hover: '#243428',
-    surface_press: '#304434',
-    line: '#2d3d30',
-    ink: '#f7faf8',
-    ink_dim: '#d2e3d5',
-    ink_faint: '#8fa894',
-    accent: '#4ade80',   // Emerald green accent
-    green: '#22c55e',    // Brand green
-    link: '#86efac'
+    screen: '#0a100c',
+    surface: '#131c15',
+    surface_hover: '#1c291f',
+    surface_press: '#26372b',
+    line: '#243327',
+    ink: '#f5faf6',
+    ink_dim: '#cbd8ce',
+    ink_faint: '#7f9684',
+    accent: '#2ea85c',   // Refined deep emerald
+    green: '#1ba14e',    // Brand green
+    link: '#34bc67'
   }
 };
 
@@ -50,6 +50,15 @@ document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
 function colors() {
   return isDark ? THEME.dark : THEME.light;
 }
+
+// Logo image objects
+const logoDark = new Image();
+logoDark.src = './logo-dark.png';
+const logoLight = new Image();
+logoLight.src = './logo-light.png';
+
+logoDark.onload = () => requestRedraw();
+logoLight.onload = () => requestRedraw();
 
 // State
 let tab = 'home'; // 'home' | 'charges' | 'saved'
@@ -89,44 +98,19 @@ function addClickable(rect, action) {
   }));
 }
 
-// Trillium / Provincial Flower Vector (replaces Canadian Maple Leaf)
-function drawLeafShapes(context, cx, cy, size, color) {
-  context.save();
-  context.translate(cx, cy);
-  const scale = size / 48;
-  context.scale(scale, scale);
-
-  context.fillStyle = color;
-  context.strokeStyle = color;
-
-  // 3 Trillium Sepals
-  context.beginPath();
-  context.lineWidth = 3.5;
-  context.lineCap = 'round';
-  context.moveTo(0, 0); context.lineTo(0, 20);
-  context.moveTo(0, 0); context.lineTo(-17, -10);
-  context.moveTo(0, 0); context.lineTo(17, -10);
-  context.stroke();
-
-  // 3 Trillium Petals
-  for (let i = 0; i < 3; i++) {
-    context.save();
-    context.rotate((i * 120 * Math.PI) / 180);
-    context.beginPath();
-    context.moveTo(0, 0);
-    context.bezierCurveTo(-9, -12, -12, -26, 0, -30);
-    context.bezierCurveTo(12, -26, 9, -12, 0, 0);
-    context.fill();
-    context.restore();
+// Draw new official clipboard & Ontario map logo
+function drawLogo(context, cx, cy, targetWidth) {
+  const img = isDark ? logoLight : logoDark;
+  const aspect = 1024 / 764; // original aspect ratio 1.34:1
+  const w = targetWidth;
+  const h = w / aspect;
+  if (img.complete && img.naturalWidth > 0) {
+    context.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+  } else {
+    // Fallback while loading
+    context.fillStyle = colors().green;
+    context.fillRect(cx - w / 2, cy - h / 2, w, h);
   }
-
-  // Center pip
-  context.beginPath();
-  context.arc(0, 0, 3.5, 0, Math.PI * 2);
-  context.fillStyle = isDark ? '#fef08a' : '#ca8a04';
-  context.fill();
-
-  context.restore();
 }
 
 function visibleCharges(stuckOnly = false) {
@@ -270,8 +254,8 @@ function drawStatusBar(ctx, x, y, w) {
 
 function drawTitleBar(ctx, x, y, w) {
   const c = colors();
-  // Trillium icon
-  drawLeafShapes(ctx, x + PAD + 14.0, y + 22.0, 28.0, c.green);
+  // Logo icon
+  drawLogo(ctx, x + PAD + 14.0, y + 24.0, 30.0);
 
   ctx.font = `700 ${w < 340.0 ? 16.5 : 19.0}px system-ui, -apple-system, sans-serif`;
   ctx.fillStyle = c.ink;
@@ -305,23 +289,23 @@ function drawTitleBar(ctx, x, y, w) {
 function drawHomeScreen(ctx, x, y, w, h) {
   const c = colors();
   const cx = x + w / 2;
-  const leaf_y = y + Math.max(160.0, h * 0.25);
+  const leaf_y = y + Math.max(130.0, h * 0.20);
 
-  // Hero Trillium Emblem
-  drawLeafShapes(ctx, cx, leaf_y, 44.0, c.accent);
+  // Hero Logo Emblem
+  drawLogo(ctx, cx, leaf_y, 82.0);
 
   // Hero titles (identical typography to Stick-the-Charge)
   ctx.font = '700 27px system-ui, -apple-system, sans-serif';
   ctx.fillStyle = c.ink;
   ctx.textAlign = 'center';
-  ctx.fillText('Before the ticket,', cx, leaf_y + 46.0);
+  ctx.fillText('Before the ticket,', cx, leaf_y + 68.0);
 
   ctx.fillStyle = c.green;
-  ctx.fillText('check the Code.', cx, leaf_y + 80.0);
+  ctx.fillText('check the Code.', cx, leaf_y + 102.0);
 
   ctx.font = '13px system-ui, -apple-system, sans-serif';
   ctx.fillStyle = c.ink_faint;
-  ctx.fillText('Find a POA charge. Review the essential elements.', cx, leaf_y + 118.0);
+  ctx.fillText('Find a POA charge. Review the essential elements.', cx, leaf_y + 138.0);
 
   // Search pill
   const pill_w = Math.max(120.0, w - PAD * 2.0);
@@ -484,7 +468,10 @@ function drawChargesScreen(ctx, x, y, w, h, stuckOnly = false) {
 
   if (listItems.length === 0) {
     const cy = curY + 70.0;
-    drawLeafShapes(ctx, x + w / 2, cy - 20.0, 36.0, c.line);
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    drawLogo(ctx, x + w / 2, cy - 20.0, 48.0);
+    ctx.restore();
     ctx.font = '600 13px system-ui, -apple-system, sans-serif';
     ctx.fillStyle = c.ink_dim;
     ctx.textAlign = 'center';
@@ -525,7 +512,7 @@ function drawChargesScreen(ctx, x, y, w, h, stuckOnly = false) {
 
         // Stuck indicator pin mark
         if (isStuck) {
-          drawLeafShapes(ctx, rowX + rowW - 36.0, rowY + 28.0, 14.0, c.green);
+          drawLogo(ctx, rowX + rowW - 36.0, rowY + 28.0, 18.0);
         }
 
         // Chevron arrow
@@ -558,8 +545,8 @@ function drawDetailScreen(ctx, x, y, w, h) {
   const isStuck = stuck.has(charge.id);
   const innerW = w - PAD * 2.0;
 
-  // Header back bar
-  const barY = y + 10.0;
+  // Header back bar (placed below 44px status bar)
+  const barY = y + 44.0;
   const backX = x + PAD + 16.0;
   const backY = barY + 22.0;
 
@@ -582,8 +569,8 @@ function drawDetailScreen(ctx, x, y, w, h) {
     requestRedraw();
   });
 
-  // Center Trillium
-  drawLeafShapes(ctx, x + w / 2, backY, 32.0, c.green);
+  // Center Logo
+  drawLogo(ctx, x + w / 2, backY, 34.0);
 
   // Save / Stick button (top right)
   const saveW = 76.0;
@@ -614,20 +601,20 @@ function drawDetailScreen(ctx, x, y, w, h) {
   ctx.rect(x, contentTop, w, contentH);
   ctx.clip();
 
-  let curY = contentTop + 10.0 - detailScrollY;
+  let curY = contentTop + 24.0 - detailScrollY;
 
   // Charge Title block
   ctx.font = '700 24px system-ui, -apple-system, sans-serif';
   ctx.fillStyle = c.ink;
   ctx.textAlign = 'left';
-  wrapText(ctx, charge.name, x + PAD, curY, innerW, 28.0);
-  curY += 60.0;
+  const titleLines = wrapText(ctx, charge.name, x + PAD, curY, innerW, 28.0);
+  curY += (titleLines - 1) * 28.0 + 26.0;
 
   // Section subtitle
   ctx.font = '12px system-ui, -apple-system, sans-serif';
   ctx.fillStyle = c.ink_dim;
   ctx.fillText(`${charge.statute} Section ${charge.section} · officer compliance draft`, x + PAD, curY);
-  curY += 24.0;
+  curY += 28.0;
 
   // Essential Elements Points (with green numbered highlights)
   const chargeChecks = checkedItems[charge.id] || {};
