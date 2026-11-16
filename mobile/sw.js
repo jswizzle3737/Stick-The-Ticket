@@ -1,4 +1,4 @@
-const CACHE = 'stick-the-ticket-v15';
+const CACHE = 'stick-the-ticket-v16';
 const FILES = [
   './',
   './index.html',

@@ -189,6 +189,7 @@ function getActiveSearchQuery() {
 }
 
 function setActiveSearchQuery(nextVal) {
+  stopScrollMotion();
   if (isSavedSearchContext()) {
     savedQuery = nextVal;
     savedScrollY = 0;
@@ -205,6 +206,7 @@ function setSearchFacet(nextFacet) {
   searchFacet = valid;
   listScrollY = 0;
   searchScrollY = 0;
+  stopScrollMotion();
   requestRedraw();
 }
 let openChargeIdx = null;
@@ -233,6 +235,28 @@ let maxRulesScrollY = 0;
 let maxSettingsScrollY = 0;
 let maxSearchScrollY = 0;
 let maxDetailScrollY = 0;
+
+let scrollVelocityY = 0;
+let scrollTargetId = null;
+let scrollTargetY = null;
+let scrollEaseSpeed = 28.0;
+let scrollOverscrollY = 0;
+let scrollAnimRafId = 0;
+let scrollLastFrameMs = 0;
+let isDraggingTouch = false;
+let isDraggingMouse = false;
+let mouseDragArmed = false;
+let mouseDragMoved = false;
+let activeTouchId = null;
+let pointerDragLastY = 0;
+let pointerDragTotal = 0;
+let caughtFastGlide = false;
+let pointerSamples = [];
+let ignoreClickResetTimer = null;
+
+const visibleChargesCache = new Map();
+let stuckMutationVersion = 0;
+let statuteMutationVersion = 0;
 
 let hoverPos = null;
 let searchFocused = false;
@@ -383,6 +407,10 @@ function applyWorkSnapshot(rawData = {}) {
   searchScrollY = 0;
   rulesScrollY = 0;
   savedScrollY = 0;
+  stopScrollMotion();
+  stuckMutationVersion++;
+  statuteMutationVersion++;
+  visibleChargesCache.clear();
   syncThemeDocument();
   if (typeof queryCountCache !== 'undefined') queryCountCache.clear();
   if (typeof rowMeasureCache !== 'undefined') rowMeasureCache.clear();
@@ -416,6 +444,8 @@ function clearRecentSearches() {
 }
 
 function saveStuck() {
+  stuckMutationVersion++;
+  visibleChargesCache.clear();
   persistActiveWorkspace();
 }
 
@@ -441,6 +471,7 @@ function setDefaultSort(nextSort) {
   sort = valid;
   listScrollY = 0;
   savedScrollY = 0;
+  stopScrollMotion();
   persistActiveWorkspace();
   showStatusToast(`Default sort: ${valid === 'name' ? 'By Name' : 'By Number'}`);
   requestRedraw();
@@ -458,10 +489,13 @@ function toggleStatuteSelection(code) {
   } else {
     selectedStatutes.add(code);
   }
+  statuteMutationVersion++;
+  visibleChargesCache.clear();
   if (typeof queryCountCache !== 'undefined') queryCountCache.clear();
   if (typeof rowMeasureCache !== 'undefined') rowMeasureCache.clear();
   listScrollY = 0;
   searchScrollY = 0;
+  stopScrollMotion();
   if (filter && !CHARGES.some(ch => selectedStatutes.has(ch.statute) && ch.category === filter)) {
     filter = null;
   }
@@ -474,9 +508,12 @@ function toggleStatuteSelection(code) {
 function enableStatuteCode(code = 'HTA') {
   if (!AVAILABLE_STATUTE_CODES.includes(code)) return;
   selectedStatutes.add(code);
+  statuteMutationVersion++;
+  visibleChargesCache.clear();
   if (typeof queryCountCache !== 'undefined') queryCountCache.clear();
   listScrollY = 0;
   searchScrollY = 0;
+  stopScrollMotion();
   persistActiveWorkspace();
   showStatusToast(`${code} enabled (${STATUTE_COUNTS.get(code) || 0} offences)`);
   requestRedraw();
@@ -2329,6 +2366,12 @@ function getPredictiveSuggestions(rawQuery, maxItems = 5) {
 function visibleCharges(stuckOnly = false, { ignoreCategoryFilter = false, ignoreFacet = false, sortMode = null } = {}) {
   const q = stuckOnly ? savedQuery.trim() : query.trim();
   const activeFacet = ignoreFacet ? 'all' : searchFacet;
+  const activeCat = ignoreCategoryFilter ? '' : (filter || '');
+  const activeSort = sortMode || (q ? searchSort : sort);
+  const cacheKey = `${stuckOnly ? 1 : 0}|${stuckOnly ? stuckMutationVersion : statuteMutationVersion}|${activeFacet}|${activeCat}|${activeSort}|${q}`;
+  const cached = visibleChargesCache.get(cacheKey);
+  if (cached) return cached;
+
   const list = [];
 
   for (let i = 0; i < CHARGES.length; i++) {
@@ -2350,7 +2393,6 @@ function visibleCharges(stuckOnly = false, { ignoreCategoryFilter = false, ignor
     }
   }
 
-  const activeSort = sortMode || (q ? searchSort : sort);
   if (activeSort === 'relevance' && q) {
     list.sort((a, b) => b.score - a.score || compareChargesByNumber(a, b));
   } else if (activeSort === 'number') {
@@ -2358,6 +2400,11 @@ function visibleCharges(stuckOnly = false, { ignoreCategoryFilter = false, ignor
   } else {
     list.sort((a, b) => a.name.localeCompare(b.name));
   }
+  if (visibleChargesCache.size >= 24) {
+    const oldestKey = visibleChargesCache.keys().next().value;
+    visibleChargesCache.delete(oldestKey);
+  }
+  visibleChargesCache.set(cacheKey, list);
   return list;
 }
 
@@ -2385,12 +2432,14 @@ function openRulesSubView() {
   tab = 'settings';
   settingsSubView = 'rules';
   rulesScrollY = 0;
+  stopScrollMotion();
   pushNavState('rules', { originTab: 'settings' });
   draw();
 }
 
 function closeRulesSubView({ fromPopState = false } = {}) {
   settingsSubView = null;
+  stopScrollMotion();
   if (!fromPopState && history?.state?.sttView === 'rules') {
     ignoreNextPopState = true;
     try { history.back(); } catch { ignoreNextPopState = false; }
@@ -2404,6 +2453,7 @@ function openAppBarSearch() {
     searchOriginTab = tab;
     appBarSearchOpen = true;
     searchScrollY = 0;
+    stopScrollMotion();
     pushNavState('search', { originTab: searchOriginTab });
   }
   focusSearchInput();
@@ -2412,6 +2462,7 @@ function openAppBarSearch() {
 function closeAppBarSearch({ fromPopState = false, clearQuery = true } = {}) {
   appBarSearchOpen = false;
   searchFocused = false;
+  stopScrollMotion();
   if (clearQuery) {
     query = '';
     if (searchInput) searchInput.value = '';
@@ -2448,6 +2499,7 @@ function openChargeDetail(idx, { replace = false } = {}) {
   }
   openChargeIdx = idx;
   detailScrollY = 0;
+  stopScrollMotion();
   searchFocused = false;
   if (!replace) {
     pushNavState('detail', { chargeIdx: idx });
@@ -2459,6 +2511,7 @@ function closeDetail({ fromPopState = false } = {}) {
   const snap = pendingDetailReturnScroll;
   pendingDetailReturnScroll = null;
   openChargeIdx = null;
+  stopScrollMotion();
   if (snap) {
     appBarSearchOpen = snap.appBarSearchOpen;
     tab = snap.tab;
@@ -2497,12 +2550,11 @@ function resize() {
 
 window.addEventListener('resize', resize);
 
-let redrawScheduled = false;
+let redrawRafId = 0;
 function requestRedraw() {
-  if (redrawScheduled) return;
-  redrawScheduled = true;
-  requestAnimationFrame(() => {
-    redrawScheduled = false;
+  if (redrawRafId || scrollAnimRafId) return;
+  redrawRafId = requestAnimationFrame(() => {
+    redrawRafId = 0;
     draw();
   });
 }
@@ -2696,6 +2748,10 @@ function drawStatusToast(context, x, y, w, h) {
 
 // Drawing routines
 function draw() {
+  if (redrawRafId) {
+    cancelAnimationFrame(redrawRafId);
+    redrawRafId = 0;
+  }
   clickables = [];
   activeSearchBox = null;
   lastSearchRender = null;
@@ -2837,6 +2893,9 @@ function draw() {
     maxRulesScrollY,
     settingsScrollY,
     maxSettingsScrollY,
+    isScrolling: scrollAnimRafId !== 0 || Math.abs(scrollVelocityY) > 0 || scrollTargetId !== null || Math.abs(scrollOverscrollY) > 0.25,
+    scrollVelocityY: Math.round(scrollVelocityY),
+    scrollOverscrollY: Number(scrollOverscrollY.toFixed(2)),
     searchFocused,
     searchRender: lastSearchRender,
     recentSearches: [...recentSearches],
@@ -2862,6 +2921,10 @@ function draw() {
 }
 
 function updateCursor() {
+  if (isDraggingMouse) {
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
   if (!hoverPos) {
     canvas.style.cursor = 'default';
     return;
@@ -3039,6 +3102,7 @@ function drawTitleBar(context, x, y, w) {
         if (searchInput) searchInput.value = '';
         searchScrollY = 0;
         listScrollY = 0;
+        stopScrollMotion();
         focusSearchInput();
       }, 'search-clear');
     }
@@ -3557,6 +3621,7 @@ function drawHomeScreen(context, x, y, w, h) {
       tab = 'settings';
       settingsSubView = null;
       settingsScrollY = 0;
+      stopScrollMotion();
       requestRedraw();
     };
   } else if (enabledCodes.length === 1) {
@@ -3566,6 +3631,7 @@ function drawHomeScreen(context, x, y, w, h) {
     metaAction = () => {
       tab = 'charges';
       listScrollY = 0;
+      stopScrollMotion();
       requestRedraw();
     };
   } else {
@@ -3575,6 +3641,7 @@ function drawHomeScreen(context, x, y, w, h) {
     metaAction = () => {
       tab = 'charges';
       listScrollY = 0;
+      stopScrollMotion();
       requestRedraw();
     };
   }
@@ -3675,15 +3742,25 @@ function measureChargeRow(context, item, rowW, { richSearch = false } = {}) {
   return measured;
 }
 
-function drawScrollbar(context, c, rightEdgeX, viewTop, viewH, scrollY, maxScrollY) {
+function drawScrollbar(context, c, rightEdgeX, viewTop, viewH, scrollY, maxScrollY, overscrollY = 0) {
   if (maxScrollY <= 1 || viewH < 48) return;
   const trackPad = 5.0;
   const trackH = viewH - trackPad * 2.0;
   const contentRatio = viewH / (viewH + maxScrollY);
-  const thumbH = Math.max(24.0, Math.min(trackH * 0.85, trackH * contentRatio));
-  const thumbY = viewTop + trackPad + (trackH - thumbH) * (scrollY / maxScrollY);
+  const baseThumbH = Math.max(24.0, Math.min(trackH * 0.85, trackH * contentRatio));
+  const overRatio = Math.min(0.45, Math.abs(overscrollY) / 56.0);
+  const thumbH = Math.max(16.0, baseThumbH * (1.0 - overRatio));
+  let thumbY;
+  if (overscrollY < 0) {
+    thumbY = viewTop + trackPad;
+  } else if (overscrollY > 0) {
+    thumbY = viewTop + trackPad + (trackH - thumbH);
+  } else {
+    const ratio = Math.max(0, Math.min(1, scrollY / maxScrollY));
+    thumbY = viewTop + trackPad + (trackH - baseThumbH) * ratio;
+  }
   context.save();
-  context.fillStyle = isDark ? 'rgba(255, 255, 255, 0.22)' : 'rgba(0, 0, 0, 0.36)';
+  context.fillStyle = isDark ? 'rgba(255, 255, 255, 0.24)' : 'rgba(0, 0, 0, 0.36)';
   roundRect(context, rightEdgeX - 5.5, thumbY, 2.8, thumbH, 1.4);
   context.fill();
   context.restore();
@@ -3702,6 +3779,7 @@ function drawGroupedChargeList(context, c, measured, groupX, startY, groupW, cli
 
   let rowY = startY;
   for (let i = 0; i < measured.length; i++) {
+    if (rowY > clipBottom) break;
     const m = measured[i];
     const { item, isStuck, nameLines, rowH } = m;
     if (rowY + rowH >= clipTop && rowY <= clipBottom) {
@@ -4142,6 +4220,7 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
         query = '';
         if (searchInput) searchInput.value = '';
         listScrollY = 0;
+        stopScrollMotion();
         focusSearchInput();
       }, 'search-clear');
     }
@@ -4187,6 +4266,7 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
             filter = filter === cat.id ? null : cat.id;
           }
           listScrollY = 0;
+          stopScrollMotion();
           requestRedraw();
         }, `chip-${cat.id ?? 'all'}`);
 
@@ -4252,6 +4332,7 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
       addClickable(clearRect, () => {
         savedQuery = '';
         savedScrollY = 0;
+        stopScrollMotion();
         if (searchInput) searchInput.value = '';
         focusSearchInput();
       }, 'saved-search-clear');
@@ -4354,6 +4435,7 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
       else listScrollY = 0;
       persistActiveWorkspace();
     }
+    stopScrollMotion();
     requestRedraw();
   }, 'sort-toggle');
 
@@ -4405,11 +4487,11 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
           savedQuery = '';
           savedScrollY = 0;
           if (searchInput && isSavedSearchContext()) searchInput.value = '';
-          requestRedraw();
         } else {
           tab = 'charges';
-          requestRedraw();
         }
+        stopScrollMotion();
+        requestRedraw();
       }, hasSaved ? 'saved-empty-clear' : 'empty-browse-poa');
     } else if (noStatutes) {
       const cy = curY + Math.min(100.0, maxListH * 0.42);
@@ -4453,6 +4535,7 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
         tab = 'settings';
         settingsSubView = null;
         settingsScrollY = 0;
+        stopScrollMotion();
         requestRedraw();
       }, 'empty-open-settings');
     } else {
@@ -4501,6 +4584,7 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
         addClickable(br, () => {
           filter = null;
           listScrollY = 0;
+          stopScrollMotion();
           requestRedraw();
         }, 'empty-all-categories');
         btnY += bh + 8.0;
@@ -4542,6 +4626,7 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
           query = '';
           if (searchInput) searchInput.value = '';
           listScrollY = 0;
+          stopScrollMotion();
           focusSearchInput();
         }, 'search-empty-clear');
       }
@@ -4565,19 +4650,21 @@ function drawChargesScreen(context, x, y, w, h, stuckOnly = false) {
       listScrollY = Math.min(listScrollY, maxListScrollY);
     }
 
+    const ctxId = stuckOnly ? 'saved' : 'charges';
     const activeScroll = stuckOnly ? savedScrollY : listScrollY;
+    const overscrollY = visualOverscrollFor(ctxId);
 
     context.save();
     context.beginPath();
     context.rect(x, curY, w, maxListH);
     context.clip();
 
-    drawGroupedChargeList(context, c, measured, rowX, curY - activeScroll, rowW, curY, listBottom, 'charge', {
+    drawGroupedChargeList(context, c, measured, rowX, curY - (activeScroll + overscrollY), rowW, curY, listBottom, 'charge', {
       highlightQuery: highlightQ
     });
 
     context.restore();
-    drawScrollbar(context, c, x + w, curY, maxListH, activeScroll, maxScroll);
+    drawScrollbar(context, c, x + w, curY, maxListH, activeScroll, maxScroll, overscrollY);
   }
 
   // Floating recent & suggested searches popover when inline POA Code box is focused and empty
@@ -4649,13 +4736,14 @@ function drawAppBarSearchScreen(context, x, y, w, h) {
 
     maxSearchScrollY = Math.max(0, totalH - maxViewH);
     searchScrollY = Math.min(searchScrollY, maxSearchScrollY);
+    const searchOverscroll = visualOverscrollFor('search');
 
     context.save();
     context.beginPath();
     context.rect(x, curY, w, maxViewH);
     context.clip();
 
-    let ry = curY - searchScrollY;
+    let ry = curY - (searchScrollY + searchOverscroll);
 
     // 1. Recent Searches Header & Card
     context.font = '700 9.5px system-ui, -apple-system, sans-serif';
@@ -4897,7 +4985,7 @@ function drawAppBarSearchScreen(context, x, y, w, h) {
     context.stroke();
 
     context.restore();
-    drawScrollbar(context, c, x + w, curY, maxViewH, searchScrollY, maxSearchScrollY);
+    drawScrollbar(context, c, x + w, curY, maxViewH, searchScrollY, maxSearchScrollY, searchOverscroll);
     return;
   }
 
@@ -4945,6 +5033,7 @@ function drawAppBarSearchScreen(context, x, y, w, h) {
   addClickable(sortRect, () => {
     searchSort = searchSort === 'relevance' ? 'number' : searchSort === 'number' ? 'name' : 'relevance';
     searchScrollY = 0;
+    stopScrollMotion();
     requestRedraw();
   }, 'search-sort-toggle');
 
@@ -5017,6 +5106,7 @@ function drawAppBarSearchScreen(context, x, y, w, h) {
         query = '';
         if (searchInput) searchInput.value = '';
         searchScrollY = 0;
+        stopScrollMotion();
         focusSearchInput();
       }, 'search-empty-clear');
     } else if (allFacetCount > 0) {
@@ -5049,6 +5139,7 @@ function drawAppBarSearchScreen(context, x, y, w, h) {
         query = '';
         if (searchInput) searchInput.value = '';
         searchScrollY = 0;
+        stopScrollMotion();
         focusSearchInput();
       }, 'search-empty-clear');
     } else {
@@ -5072,6 +5163,7 @@ function drawAppBarSearchScreen(context, x, y, w, h) {
         query = '';
         if (searchInput) searchInput.value = '';
         searchScrollY = 0;
+        stopScrollMotion();
         focusSearchInput();
       }, 'search-empty-clear');
     }
@@ -5084,18 +5176,19 @@ function drawAppBarSearchScreen(context, x, y, w, h) {
 
   maxSearchScrollY = Math.max(0, totalH - maxViewH);
   searchScrollY = Math.min(searchScrollY, maxSearchScrollY);
+  const searchOverscroll = visualOverscrollFor('search');
 
   context.save();
   context.beginPath();
   context.rect(x, curY, w, maxViewH);
   context.clip();
 
-  drawGroupedChargeList(context, c, measured, x + PAD, curY - searchScrollY, innerW, curY, listBottom, 'search-result', {
+  drawGroupedChargeList(context, c, measured, x + PAD, curY - (searchScrollY + searchOverscroll), innerW, curY, listBottom, 'search-result', {
     highlightQuery: trimmedQuery
   });
 
   context.restore();
-  drawScrollbar(context, c, x + w, curY, maxViewH, searchScrollY, maxSearchScrollY);
+  drawScrollbar(context, c, x + w, curY, maxViewH, searchScrollY, maxSearchScrollY, searchOverscroll);
 }
 
 function drawRulesSubScreen(context, x, y, w, h) {
@@ -5209,13 +5302,14 @@ function drawRulesSubScreen(context, x, y, w, h) {
   const totalH = measuredCards.reduce((acc, m) => acc + m.cardH + cardGap, 0) + 6.0 + refCardH + 8.0;
   maxRulesScrollY = Math.max(0, totalH - maxListH);
   rulesScrollY = Math.min(rulesScrollY, maxRulesScrollY);
+  const rulesOverscroll = visualOverscrollFor('rules');
 
   context.save();
   context.beginPath();
   context.rect(x, curY, w, maxListH);
   context.clip();
 
-  let rowY = curY - rulesScrollY;
+  let rowY = curY - (rulesScrollY + rulesOverscroll);
 
   for (const m of measuredCards) {
     const { item, titleLines, noteLines, cardH } = m;
@@ -5331,7 +5425,7 @@ function drawRulesSubScreen(context, x, y, w, h) {
   }
 
   context.restore();
-  drawScrollbar(context, c, x + w, curY, maxListH, rulesScrollY, maxRulesScrollY);
+  drawScrollbar(context, c, x + w, curY, maxListH, rulesScrollY, maxRulesScrollY, rulesOverscroll);
 }
 
 function drawSettingsScreen(context, x, y, w, h) {
@@ -5404,13 +5498,14 @@ function drawSettingsScreen(context, x, y, w, h) {
 
   maxSettingsScrollY = Math.max(0, totalH - viewH);
   settingsScrollY = Math.min(settingsScrollY, maxSettingsScrollY);
+  const settingsOverscroll = visualOverscrollFor('settings');
 
   context.save();
   context.beginPath();
   context.rect(x, viewTop, w, viewH);
   context.clip();
 
-  let curY = viewTop - settingsScrollY;
+  let curY = viewTop - (settingsScrollY + settingsOverscroll);
 
   const drawSectionHeader = (leftLabel, rightLabel = '', rightColor = c.ink_faint) => {
     if (curY + hdrH >= viewTop && curY <= viewBottom) {
@@ -6029,7 +6124,7 @@ function drawSettingsScreen(context, x, y, w, h) {
   }
 
   context.restore();
-  drawScrollbar(context, c, x + w, viewTop, viewH, settingsScrollY, maxSettingsScrollY);
+  drawScrollbar(context, c, x + w, viewTop, viewH, settingsScrollY, maxSettingsScrollY, settingsOverscroll);
 }
 
 function measureParagraphLines(context, rawText, maxW) {
@@ -6297,7 +6392,8 @@ function drawDetailScreen(context, x, y, w, h) {
   context.rect(x, contentTop, w, contentH);
   context.clip();
 
-  let curY = contentTop + 12.0 - detailScrollY;
+  const detailOverscroll = visualOverscrollFor('detail');
+  let curY = contentTop + 12.0 - (detailScrollY + detailOverscroll);
 
   // Title
   context.textAlign = 'left';
@@ -6360,8 +6456,7 @@ function drawDetailScreen(context, x, y, w, h) {
 
     const firstMatchRelY = elementRelYs[matchedElementIndices[0]] ?? preElementsH;
     addClickable(jumpRect, () => {
-      detailScrollY = Math.max(0, Math.min(maxDetailScrollY, firstMatchRelY - 26.0));
-      requestRedraw();
+      scrollToSmooth('detail', Math.max(0, Math.min(maxDetailScrollY, firstMatchRelY - 26.0)), 26.0);
     }, 'detail-jump-match');
   }
   curY += proveHeaderH;
@@ -6666,7 +6761,7 @@ function drawDetailScreen(context, x, y, w, h) {
   }
 
   context.restore();
-  drawScrollbar(context, c, x + w, contentTop, contentH, detailScrollY, maxDetailScrollY);
+  drawScrollbar(context, c, x + w, contentTop, contentH, detailScrollY, maxDetailScrollY, detailOverscroll);
 }
 
 function drawNavBar(context, x, y, w, h) {
@@ -6794,6 +6889,7 @@ function drawNavBar(context, x, y, w, h) {
         if (item.id === 'charges') listScrollY = 0;
         if (item.id === 'saved') savedScrollY = 0;
         if (item.id === 'settings') settingsScrollY = 0;
+        stopScrollMotion();
         if (typeof history?.replaceState === 'function') {
           try {
             history.replaceState({ sttView: 'root', tab: item.id, settingsSubView: null, appBarSearchOpen: false }, '');
@@ -6878,6 +6974,7 @@ if (searchInput) {
       if (!appBarSearchOpen && tab === 'home') {
         tab = 'charges';
         listScrollY = 0;
+        stopScrollMotion();
       }
       searchFocused = false;
       stopCaretBlink();
@@ -6948,87 +7045,503 @@ if (searchInput) {
 
 let ignoreNextClick = false;
 
+function scheduleIgnoreNextClick(delayMs = 280) {
+  ignoreNextClick = true;
+  if (ignoreClickResetTimer) clearTimeout(ignoreClickResetTimer);
+  ignoreClickResetTimer = setTimeout(() => {
+    ignoreNextClick = false;
+    ignoreClickResetTimer = null;
+  }, delayMs);
+}
+
+function clearIgnoreNextClick() {
+  ignoreNextClick = false;
+  if (ignoreClickResetTimer) {
+    clearTimeout(ignoreClickResetTimer);
+    ignoreClickResetTimer = null;
+  }
+}
+
+function getActiveScrollContext() {
+  if (openChargeIdx !== null) {
+    return {
+      id: 'detail',
+      get: () => detailScrollY,
+      set: v => { detailScrollY = v; },
+      max: () => maxDetailScrollY
+    };
+  }
+  if (appBarSearchOpen) {
+    return {
+      id: 'search',
+      get: () => searchScrollY,
+      set: v => { searchScrollY = v; },
+      max: () => maxSearchScrollY
+    };
+  }
+  if (tab === 'charges') {
+    return {
+      id: 'charges',
+      get: () => listScrollY,
+      set: v => { listScrollY = v; },
+      max: () => maxListScrollY
+    };
+  }
+  if (tab === 'saved') {
+    return {
+      id: 'saved',
+      get: () => savedScrollY,
+      set: v => { savedScrollY = v; },
+      max: () => maxSavedScrollY
+    };
+  }
+  if (tab === 'settings') {
+    if (settingsSubView === 'rules') {
+      return {
+        id: 'rules',
+        get: () => rulesScrollY,
+        set: v => { rulesScrollY = v; },
+        max: () => maxRulesScrollY
+      };
+    }
+    return {
+      id: 'settings',
+      get: () => settingsScrollY,
+      set: v => { settingsScrollY = v; },
+      max: () => maxSettingsScrollY
+    };
+  }
+  return null;
+}
+
+function visualOverscrollFor(ctxId) {
+  const active = getActiveScrollContext();
+  return active && active.id === ctxId ? scrollOverscrollY : 0;
+}
+
+function stopScrollMotion({ keepOverscroll = false } = {}) {
+  scrollVelocityY = 0;
+  scrollTargetId = null;
+  scrollTargetY = null;
+  if (!keepOverscroll) {
+    scrollOverscrollY = 0;
+    if (scrollAnimRafId) {
+      cancelAnimationFrame(scrollAnimRafId);
+      scrollAnimRafId = 0;
+    }
+  }
+}
+
+function startScrollAnim() {
+  if (scrollAnimRafId) return;
+  if (redrawRafId) {
+    cancelAnimationFrame(redrawRafId);
+    redrawRafId = 0;
+  }
+  scrollLastFrameMs = performance.now();
+  scrollAnimRafId = requestAnimationFrame(stepScrollAnim);
+}
+
+function scrollToSmooth(ctxId, targetY, speed = 28.0) {
+  const ctx = getActiveScrollContext();
+  if (!ctx || ctx.id !== ctxId) return;
+  const maxY = Math.max(0, ctx.max());
+  const clampedTarget = Math.max(0, Math.min(maxY, targetY));
+  scrollVelocityY = 0;
+  scrollOverscrollY = 0;
+  scrollTargetId = ctxId;
+  scrollTargetY = clampedTarget;
+  scrollEaseSpeed = speed;
+  if (Math.abs(clampedTarget - ctx.get()) <= 0.5) {
+    ctx.set(clampedTarget);
+    scrollTargetId = null;
+    scrollTargetY = null;
+    requestRedraw();
+    return;
+  }
+  startScrollAnim();
+}
+
+function stepScrollAnim(now) {
+  scrollAnimRafId = 0;
+  const ctx = getActiveScrollContext();
+  if (!ctx) {
+    stopScrollMotion();
+    draw();
+    return;
+  }
+
+  const rawDt = scrollLastFrameMs > 0 ? (now - scrollLastFrameMs) / 1000 : 1 / 60;
+  scrollLastFrameMs = now;
+  const dtSec = Math.max(0.004, Math.min(0.034, rawDt || 1 / 60));
+  const maxY = Math.max(0, ctx.max());
+  let keepRunning = false;
+
+  if (scrollTargetId === ctx.id && scrollTargetY !== null) {
+    const clampedTarget = Math.max(0, Math.min(maxY, scrollTargetY));
+    const curY = ctx.get();
+    const diff = clampedTarget - curY;
+    if (Math.abs(diff) <= 0.6) {
+      ctx.set(clampedTarget);
+      scrollTargetId = null;
+      scrollTargetY = null;
+    } else {
+      const nextY = curY + diff * (1 - Math.exp(-scrollEaseSpeed * dtSec));
+      ctx.set(Math.max(0, Math.min(maxY, nextY)));
+      keepRunning = true;
+    }
+  } else {
+    scrollTargetId = null;
+    scrollTargetY = null;
+  }
+
+  if (!isDraggingTouch && !isDraggingMouse && Math.abs(scrollVelocityY) > 0) {
+    const damping = 2.95;
+    const decay = Math.exp(-damping * dtSec);
+    const stepDelta = (scrollVelocityY * (1 - decay)) / damping;
+    scrollVelocityY *= decay;
+
+    const curY = ctx.get();
+    const nextRaw = curY + stepDelta;
+
+    if (maxY <= 0) {
+      ctx.set(0);
+      scrollVelocityY = 0;
+    } else if (nextRaw < 0) {
+      ctx.set(0);
+      scrollOverscrollY = Math.max(-26.0, scrollOverscrollY + nextRaw * 0.35);
+      scrollVelocityY *= Math.exp(-16.0 * dtSec);
+      if (Math.abs(scrollVelocityY) < 40) scrollVelocityY = 0;
+    } else if (nextRaw > maxY) {
+      ctx.set(maxY);
+      scrollOverscrollY = Math.min(26.0, scrollOverscrollY + (nextRaw - maxY) * 0.35);
+      scrollVelocityY *= Math.exp(-16.0 * dtSec);
+      if (Math.abs(scrollVelocityY) < 40) scrollVelocityY = 0;
+    } else {
+      ctx.set(nextRaw);
+    }
+
+    if (Math.abs(scrollVelocityY) < 6.0) {
+      scrollVelocityY = 0;
+    } else {
+      keepRunning = true;
+    }
+  }
+
+  if (!isDraggingTouch && !isDraggingMouse && Math.abs(scrollOverscrollY) > 0) {
+    scrollOverscrollY *= Math.exp(-18.0 * dtSec);
+    if (Math.abs(scrollOverscrollY) <= 0.25) {
+      scrollOverscrollY = 0;
+    } else {
+      keepRunning = true;
+    }
+  }
+
+  draw();
+
+  if (keepRunning) {
+    scrollAnimRafId = requestAnimationFrame(stepScrollAnim);
+  }
+}
+
+function pushPointerSample(y) {
+  const now = performance.now();
+  pointerSamples.push({ t: now, y });
+  const cutoff = now - 110;
+  while (pointerSamples.length > 2 && pointerSamples[1].t < cutoff) {
+    pointerSamples.shift();
+  }
+}
+
+function computeReleaseVelocity() {
+  if (pointerSamples.length < 2) return 0;
+  const now = performance.now();
+  let lastMoveIdx = -1;
+  for (let i = pointerSamples.length - 1; i >= 1; i--) {
+    if (Math.abs(pointerSamples[i].y - pointerSamples[i - 1].y) >= 0.4) {
+      lastMoveIdx = i;
+      break;
+    }
+  }
+  if (lastMoveIdx === -1 || now - pointerSamples[lastMoveIdx].t > 95) {
+    return 0;
+  }
+  const pLast = pointerSamples[lastMoveIdx];
+  const cutoff = pLast.t - 105;
+  let firstIdx = 0;
+  for (let i = lastMoveIdx - 1; i >= 0; i--) {
+    firstIdx = i;
+    if (pointerSamples[i].t <= cutoff) break;
+  }
+  const pFirst = pointerSamples[firstIdx];
+  const spanMs = Math.max(12, Math.max(pLast.t - pFirst.t, now - pFirst.t));
+  const v = ((pFirst.y - pLast.y) / spanMs) * 1000;
+  return Math.abs(v) > 95 ? Math.max(-4200, Math.min(4200, v * 1.15)) : 0;
+}
+
+function applyDragDelta(ctx, deltaY) {
+  const maxY = Math.max(0, ctx.max());
+  if (maxY <= 0) return;
+
+  let rem = deltaY;
+  if (scrollOverscrollY < 0 && rem > 0) {
+    const consume = Math.min(-scrollOverscrollY, rem * 0.55);
+    scrollOverscrollY += consume;
+    if (Math.abs(scrollOverscrollY) < 0.2) scrollOverscrollY = 0;
+    rem = Math.max(0, rem - consume / 0.55);
+  } else if (scrollOverscrollY > 0 && rem < 0) {
+    const consume = Math.min(scrollOverscrollY, -rem * 0.55);
+    scrollOverscrollY -= consume;
+    if (Math.abs(scrollOverscrollY) < 0.2) scrollOverscrollY = 0;
+    rem = Math.min(0, rem + consume / 0.55);
+  }
+
+  if (rem !== 0) {
+    const curY = ctx.get();
+    const nextRaw = curY + rem;
+    if (nextRaw < 0) {
+      ctx.set(0);
+      const resist = 0.42 * (1 - Math.min(0.95, Math.abs(scrollOverscrollY) / 26.0));
+      scrollOverscrollY = Math.max(-26.0, scrollOverscrollY + nextRaw * resist);
+    } else if (nextRaw > maxY) {
+      ctx.set(maxY);
+      const resist = 0.42 * (1 - Math.min(0.95, Math.abs(scrollOverscrollY) / 26.0));
+      scrollOverscrollY = Math.min(26.0, scrollOverscrollY + (nextRaw - maxY) * resist);
+    } else {
+      ctx.set(nextRaw);
+    }
+  }
+  requestRedraw();
+}
+
+function finishPointerDrag() {
+  const ctx = getActiveScrollContext();
+  if (!ctx || ctx.max() <= 0) {
+    stopScrollMotion();
+    pointerSamples = [];
+    requestRedraw();
+    return;
+  }
+
+  let v = computeReleaseVelocity();
+  pointerSamples = [];
+
+  if (scrollOverscrollY !== 0) {
+    if ((scrollOverscrollY < 0 && v < 0) || (scrollOverscrollY > 0 && v > 0)) {
+      v = 0;
+    }
+    scrollVelocityY = v;
+    startScrollAnim();
+    return;
+  }
+
+  if (Math.abs(v) > 95) {
+    scrollVelocityY = v;
+    startScrollAnim();
+  }
+}
+
 canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0 || e.sourceCapabilities?.firesTouchEvents) return;
   const rect = canvas.getBoundingClientRect();
   const px = e.clientX - rect.left;
   const py = e.clientY - rect.top;
   if (pointInRect(px, py, activeSuggestionPopoverRect)) {
     pendingPopoverInteraction = true;
   }
+  mouseDragArmed = true;
+  mouseDragMoved = false;
+  isDraggingMouse = false;
+  pointerDragLastY = e.clientY;
+  pointerDragTotal = 0;
+  pointerSamples = [];
+  pushPointerSample(e.clientY);
+  const ctx = getActiveScrollContext();
+  caughtFastGlide = Boolean(ctx && ctx.max() > 0 && Math.abs(scrollVelocityY) > 180);
+  if (caughtFastGlide) {
+    stopScrollMotion({ keepOverscroll: true });
+  }
 });
 
 canvas.addEventListener('click', e => {
   pendingPopoverInteraction = false;
   if (ignoreNextClick) {
-    ignoreNextClick = false;
+    clearIgnoreNextClick();
     return;
   }
   handlePointerAt(e.clientX, e.clientY);
 });
 
-canvas.addEventListener('mousemove', e => {
-  const rect = canvas.getBoundingClientRect();
-  hoverPos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  requestRedraw();
+window.addEventListener('mousemove', e => {
+  if (e.target === canvas && !isDraggingMouse) {
+    const rect = canvas.getBoundingClientRect();
+    hoverPos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (!scrollAnimRafId) requestRedraw();
+  }
+  if (!mouseDragArmed) return;
+  const deltaY = pointerDragLastY - e.clientY;
+  pointerDragLastY = e.clientY;
+  pointerDragTotal += Math.abs(deltaY);
+  const ctx = getActiveScrollContext();
+  if (!isDraggingMouse && pointerDragTotal > 6 && ctx && ctx.max() > 0) {
+    isDraggingMouse = true;
+    mouseDragMoved = true;
+    hoverPos = null;
+    stopScrollMotion({ keepOverscroll: true });
+    updateCursor();
+  }
+  if (isDraggingMouse && ctx) {
+    pushPointerSample(e.clientY);
+    applyDragDelta(ctx, deltaY);
+  }
+});
+
+window.addEventListener('mouseup', e => {
+  if (!mouseDragArmed || e.button !== 0) return;
+  const didDrag = isDraggingMouse && mouseDragMoved;
+  const didCatch = caughtFastGlide;
+  mouseDragArmed = false;
+  mouseDragMoved = false;
+  isDraggingMouse = false;
+  caughtFastGlide = false;
+  if (didDrag) {
+    scheduleIgnoreNextClick();
+    finishPointerDrag();
+    updateCursor();
+  } else {
+    pointerSamples = [];
+    if (didCatch) {
+      scheduleIgnoreNextClick();
+    }
+    if (Math.abs(scrollOverscrollY) > 0) {
+      startScrollAnim();
+    }
+  }
 });
 
 canvas.addEventListener('mouseleave', () => {
   hoverPos = null;
-  requestRedraw();
+  if (!scrollAnimRafId) requestRedraw();
 });
 
-// Touch and Wheel Scrolling
-let touchStartY = 0;
-let touchTotalDelta = 0;
-
-function applyScroll(deltaY) {
-  if (openChargeIdx !== null) {
-    detailScrollY = Math.max(0, Math.min(maxDetailScrollY, detailScrollY + deltaY));
-  } else if (appBarSearchOpen) {
-    searchScrollY = Math.max(0, Math.min(maxSearchScrollY, searchScrollY + deltaY));
-  } else if (tab === 'charges') {
-    listScrollY = Math.max(0, Math.min(maxListScrollY, listScrollY + deltaY));
-  } else if (tab === 'saved') {
-    savedScrollY = Math.max(0, Math.min(maxSavedScrollY, savedScrollY + deltaY));
-  } else if (tab === 'settings') {
-    if (settingsSubView === 'rules') {
-      rulesScrollY = Math.max(0, Math.min(maxRulesScrollY, rulesScrollY + deltaY));
-    } else {
-      settingsScrollY = Math.max(0, Math.min(maxSettingsScrollY, settingsScrollY + deltaY));
-    }
+window.addEventListener('blur', () => {
+  mouseDragArmed = false;
+  mouseDragMoved = false;
+  isDraggingMouse = false;
+  isDraggingTouch = false;
+  activeTouchId = null;
+  caughtFastGlide = false;
+  pointerSamples = [];
+  if (Math.abs(scrollOverscrollY) > 0) {
+    startScrollAnim();
   }
-  requestRedraw();
-}
+  updateCursor();
+});
 
 canvas.addEventListener('touchstart', e => {
+  clearIgnoreNextClick();
+  const touch = e.changedTouches[0] || e.touches[0];
+  if (!touch) return;
   const rect = canvas.getBoundingClientRect();
-  const px = e.touches[0].clientX - rect.left;
-  const py = e.touches[0].clientY - rect.top;
+  const px = touch.clientX - rect.left;
+  const py = touch.clientY - rect.top;
   if (pointInRect(px, py, activeSuggestionPopoverRect)) {
     pendingPopoverInteraction = true;
   }
-  touchStartY = e.touches[0].clientY;
-  touchTotalDelta = 0;
+  activeTouchId = touch.identifier;
+  isDraggingTouch = true;
+  pointerDragLastY = touch.clientY;
+  pointerDragTotal = 0;
+  pointerSamples = [];
+  pushPointerSample(touch.clientY);
   hoverPos = null;
-}, { passive: true });
-
-canvas.addEventListener('touchmove', e => {
-  const touchY = e.touches[0].clientY;
-  const deltaY = touchStartY - touchY;
-  touchStartY = touchY;
-  touchTotalDelta += Math.abs(deltaY);
-  applyScroll(deltaY);
-}, { passive: true });
-
-canvas.addEventListener('touchend', () => {
-  if (touchTotalDelta > 8) {
-    ignoreNextClick = true;
+  const ctx = getActiveScrollContext();
+  caughtFastGlide = Boolean(ctx && ctx.max() > 0 && Math.abs(scrollVelocityY) > 180);
+  if (ctx) {
+    stopScrollMotion({ keepOverscroll: true });
   }
 }, { passive: true });
 
+canvas.addEventListener('touchmove', e => {
+  if (!isDraggingTouch) return;
+  let touch = null;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === activeTouchId) {
+      touch = e.changedTouches[i];
+      break;
+    }
+  }
+  if (!touch) return;
+  const ctx = getActiveScrollContext();
+  if (!ctx) return;
+  if (e.cancelable) e.preventDefault();
+  const deltaY = pointerDragLastY - touch.clientY;
+  pointerDragLastY = touch.clientY;
+  pointerDragTotal += Math.abs(deltaY);
+  pushPointerSample(touch.clientY);
+  applyDragDelta(ctx, deltaY);
+}, { passive: false });
+
+function handleTouchEndOrCancel(e, cancelled = false) {
+  if (!isDraggingTouch) return;
+  let ended = cancelled;
+  if (!ended) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === activeTouchId) {
+        ended = true;
+        break;
+      }
+    }
+  }
+  if (!ended) return;
+  isDraggingTouch = false;
+  activeTouchId = null;
+  const wasDragOrCatch = pointerDragTotal > 8 || caughtFastGlide;
+  caughtFastGlide = false;
+  if (wasDragOrCatch) {
+    if (e.cancelable) e.preventDefault();
+    scheduleIgnoreNextClick();
+  }
+  if (cancelled) {
+    pointerSamples = [];
+    if (Math.abs(scrollOverscrollY) > 0) startScrollAnim();
+  } else {
+    finishPointerDrag();
+  }
+}
+
+canvas.addEventListener('touchend', e => handleTouchEndOrCancel(e, false), { passive: false });
+canvas.addEventListener('touchcancel', e => handleTouchEndOrCancel(e, true), { passive: true });
+
 canvas.addEventListener('wheel', e => {
-  applyScroll(e.deltaY);
-}, { passive: true });
+  if (e.ctrlKey) return;
+  const ctx = getActiveScrollContext();
+  if (!ctx) return;
+  if (e.cancelable) e.preventDefault();
+
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= 16.0;
+  else if (e.deltaMode === 2) dy *= Math.max(240.0, (screenRect.h || 600) * 0.85);
+  if (!Number.isFinite(dy) || Math.abs(dy) < 0.01) return;
+
+  const maxY = Math.max(0, ctx.max());
+  if (maxY <= 0) return;
+
+  scrollVelocityY = 0;
+  const base = scrollTargetId === ctx.id && scrollTargetY !== null ? scrollTargetY : ctx.get();
+  const nextTarget = Math.max(0, Math.min(maxY, base + dy));
+  if (Math.abs(nextTarget - ctx.get()) <= 0.25 && Math.abs(scrollOverscrollY) <= 0.25) {
+    ctx.set(nextTarget);
+    scrollTargetId = null;
+    scrollTargetY = null;
+    requestRedraw();
+    return;
+  }
+  scrollTargetId = ctx.id;
+  scrollTargetY = nextTarget;
+  scrollEaseSpeed = Math.abs(dy) < 20 ? 36.0 : 30.0;
+  startScrollAnim();
+}, { passive: false });
 
 if (typeof history?.replaceState === 'function') {
   try {
@@ -7058,6 +7571,7 @@ window.addEventListener('popstate', e => {
   if ((nextTab && nextTab !== tab) || nextSub !== settingsSubView) {
     if (nextTab) tab = nextTab;
     settingsSubView = nextSub;
+    stopScrollMotion();
     draw();
   }
 });

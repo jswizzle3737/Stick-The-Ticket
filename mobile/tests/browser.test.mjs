@@ -87,9 +87,53 @@ class CDPClient {
     await new Promise(r => setTimeout(r, 80));
   }
 
-  async wheelScroll(x, y, deltaY) {
+  async wheelScroll(x, y, deltaY, waitMs = 80) {
     await this.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY });
-    await new Promise(r => setTimeout(r, 80));
+    if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
+  }
+
+  async touchFlick(x, startY, endY, { steps = 5, stepMs = 15 } = {}) {
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x, y: startY, id: 1 }]
+    });
+    for (let i = 1; i <= steps; i++) {
+      await new Promise(r => setTimeout(r, stepMs));
+      const y = Math.round(startY + ((endY - startY) * i) / steps);
+      await this.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [{ x, y, id: 1 }]
+      });
+    }
+    await new Promise(r => setTimeout(r, 8));
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: []
+    });
+  }
+
+  async touchTap(x, y, holdMs = 35) {
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x, y, id: 1 }]
+    });
+    if (holdMs > 0) await new Promise(r => setTimeout(r, holdMs));
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: []
+    });
+  }
+
+  async mouseDrag(x, startY, endY, { steps = 5, stepMs = 15 } = {}) {
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: startY, button: 'none' });
+    await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y: startY, button: 'left', clickCount: 1 });
+    for (let i = 1; i <= steps; i++) {
+      await new Promise(r => setTimeout(r, stepMs));
+      const y = Math.round(startY + ((endY - startY) * i) / steps);
+      await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'left', buttons: 1 });
+    }
+    await new Promise(r => setTimeout(r, 8));
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y: endY, button: 'left', clickCount: 1 });
   }
 
   close() {
@@ -1628,8 +1672,114 @@ describe('Stick the Ticket Refined UI Tests', () => {
       await page.close();
     }
   });
+
+  test('Smooth physics scrolling glides with momentum on touch flicks and mouse drags, eases wheel ticks smoothly, and catches cleanly', async () => {
+    const page = await openPage(390, 844);
+    try {
+      const navCharges = await page.client.eval('window.testClickables.find(c => c.id === "nav-charges")');
+      await page.client.click(navCharges.x + navCharges.w / 2, navCharges.y + navCharges.h / 2);
+
+      // 1. Wheel smooth easing (multi-frame glide instead of instant 1-frame snap)
+      await page.client.wheelScroll(195, 500, 240, 32);
+      const wheelMid = await page.client.eval('window.testState');
+      assert.ok(
+        wheelMid.listScrollY > 15 && wheelMid.listScrollY < 120 && wheelMid.isScrolling,
+        `Wheel scroll must ease smoothly mid-flight, got listScrollY=${wheelMid.listScrollY}, isScrolling=${wheelMid.isScrolling}`
+      );
+      await new Promise(r => setTimeout(r, 240));
+      const wheelDone = await page.client.eval('window.testState');
+      assert.equal(wheelDone.listScrollY, 120, 'Wheel scroll must settle deterministically at exact 120px CSS target (240 / dpr=2)');
+      assert.equal(wheelDone.isScrolling, false);
+
+      // 2. Touch flick inertia glide on 1006-offence list
+      await page.client.touchFlick(195, 640, 420, { steps: 5, stepMs: 15 });
+      await new Promise(r => setTimeout(r, 24));
+      const atRelease = await page.client.eval('window.testState');
+      assert.ok(atRelease.scrollVelocityY > 200, `Expected strong release velocity > 200, got ${atRelease.scrollVelocityY}`);
+      assert.equal(atRelease.isScrolling, true);
+
+      await new Promise(r => setTimeout(r, 120));
+      const at120ms = await page.client.eval('window.testState');
+      assert.ok(
+        at120ms.listScrollY > atRelease.listScrollY + 40,
+        `Momentum glide must continue advancing list after release (${atRelease.listScrollY} -> ${at120ms.listScrollY})`
+      );
+
+      await new Promise(r => setTimeout(r, 220));
+      const at340ms = await page.client.eval('window.testState');
+      assert.ok(at340ms.listScrollY > at120ms.listScrollY, 'List must keep gliding smoothly over 340ms');
+      assert.ok(at340ms.scrollVelocityY < atRelease.scrollVelocityY, 'Momentum velocity must decelerate smoothly over time');
+
+      const settleDeadline = Date.now() + 2600;
+      let settled = at340ms;
+      while (settled.isScrolling && Date.now() < settleDeadline) {
+        await new Promise(r => setTimeout(r, 80));
+        settled = await page.client.eval('window.testState');
+      }
+      assert.equal(settled.isScrolling, false, 'Touch momentum glide must come to a full stop');
+      assert.equal(settled.scrollVelocityY, 0);
+      assert.ok(settled.listScrollY > at340ms.listScrollY && settled.listScrollY <= settled.maxListScrollY);
+
+      // 3. Catch-tap mid-glide stops motion cleanly without accidentally opening a row
+      await page.client.touchFlick(195, 640, 420, { steps: 5, stepMs: 15 });
+      await new Promise(r => setTimeout(r, 65));
+      const glidingState = await page.client.eval('window.testState');
+      assert.ok(glidingState.scrollVelocityY > 150, `Expected active glide before catch-tap, got v=${glidingState.scrollVelocityY}`);
+
+      await page.client.touchTap(195, 520, 35);
+      await new Promise(r => setTimeout(r, 90));
+      const caughtState = await page.client.eval('window.testState');
+      assert.equal(caughtState.scrollVelocityY, 0, 'Catch-tap must stop glide velocity immediately');
+      assert.equal(caughtState.isScrolling, false);
+      assert.equal(caughtState.openChargeId, null, 'Catch-tap mid-glide must not open the charge row under the finger');
+
+      await new Promise(r => setTimeout(r, 280));
+      const firstVisibleRow = await page.client.eval('window.testClickables.find(c => c.id.startsWith("charge-") && c.h >= 24)');
+      assert.ok(firstVisibleRow, 'Expected clickable charge row after catch');
+      await page.client.click(firstVisibleRow.x + firstVisibleRow.w / 2, firstVisibleRow.y + firstVisibleRow.h / 2);
+      assert.ok((await page.client.eval('window.testState')).openChargeId, 'Subsequent normal tap after catch must open charge');
+
+      const backBtn = await page.client.eval('window.testClickables.find(c => c.id === "detail-back")');
+      await page.client.click(backBtn.x + backBtn.w / 2, backBtn.y + backBtn.h / 2);
+
+      // 4. Boundary rubber-band spring-back never leaves listScrollY negative
+      const navHome = await page.client.eval('window.testClickables.find(c => c.id === "nav-home")');
+      await page.client.click(navHome.x + navHome.w / 2, navHome.y + navHome.h / 2);
+      const navCharges2 = await page.client.eval('window.testClickables.find(c => c.id === "nav-charges")');
+      await page.client.click(navCharges2.x + navCharges2.w / 2, navCharges2.y + navCharges2.h / 2);
+
+      await page.client.touchFlick(195, 380, 620, { steps: 5, stepMs: 15 });
+      await new Promise(r => setTimeout(r, 24));
+      const overAtTop = await page.client.eval('window.testState');
+      assert.equal(overAtTop.listScrollY, 0, 'Stored listScrollY must stay clamped >= 0 during top pull');
+      await new Promise(r => setTimeout(r, 380));
+      const afterSpring = await page.client.eval('window.testState');
+      assert.equal(afterSpring.listScrollY, 0);
+      assert.equal(afterSpring.scrollOverscrollY, 0, 'Top boundary overscroll must spring cleanly back to 0');
+      assert.equal(afterSpring.isScrolling, false);
+
+      // 5. Desktop mouse-drag momentum glide on Charge Detail (HTA:172)
+      const searchBox = await page.client.eval('window.testClickables.find(c => c.id === "charges-search-box")');
+      await page.client.click(searchBox.x + searchBox.w / 2, searchBox.y + searchBox.h / 2);
+      await page.client.typeText('stunt');
+      const stuntRow = await page.client.eval('window.testClickables.find(c => c.id === "charge-HTA:172")');
+      assert.ok(stuntRow, 'Expected HTA:172 row for detail mouse-drag glide test');
+      await page.client.click(stuntRow.x + stuntRow.w / 2, stuntRow.y + stuntRow.h / 2);
+
+      await page.client.mouseDrag(195, 620, 420, { steps: 5, stepMs: 15 });
+      await new Promise(r => setTimeout(r, 24));
+      const detailAfterDrag = await page.client.eval('window.testState');
+      assert.equal(detailAfterDrag.openChargeId, 'HTA:172', 'Mouse drag release must not accidentally click detail links');
+      assert.ok(detailAfterDrag.detailScrollY > 120, `Mouse drag must scroll detail smoothly, got ${detailAfterDrag.detailScrollY}`);
+      assert.ok(detailAfterDrag.scrollVelocityY > 150, `Expected mouse drag momentum velocity > 150, got ${detailAfterDrag.scrollVelocityY}`);
+
+      await new Promise(r => setTimeout(r, 140));
+      const detailLater = await page.client.eval('window.testState');
+      assert.ok(detailLater.detailScrollY > detailAfterDrag.detailScrollY, 'Charge Detail must continue gliding smoothly after mouse drag release');
+
+      assert.deepEqual(page.client.errors, []);
+    } finally {
+      await page.close();
+    }
+  });
 });
-
-
-
-
