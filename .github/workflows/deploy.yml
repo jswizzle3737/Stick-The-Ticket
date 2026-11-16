@@ -49,16 +49,20 @@ jobs:
         run: |
           if [ -x /usr/bin/google-chrome ]; then
             echo "CHROME_PATH=/usr/bin/google-chrome" >> "$GITHUB_ENV"
+            /usr/bin/google-chrome --version || true
           elif [ -x /usr/bin/chromium ]; then
             echo "CHROME_PATH=/usr/bin/chromium" >> "$GITHUB_ENV"
+            /usr/bin/chromium --version || true
           elif [ -x /usr/bin/chromium-browser ]; then
             echo "CHROME_PATH=/usr/bin/chromium-browser" >> "$GITHUB_ENV"
+            /usr/bin/chromium-browser --version || true
           else
             sudo apt-get update && sudo apt-get install -y chromium-browser
             echo "CHROME_PATH=/usr/bin/chromium-browser" >> "$GITHUB_ENV"
+            /usr/bin/chromium-browser --version || true
           fi
 
-      - name: Run 18 headless Chromium E2E tests
+      - name: Run 19 headless Chromium E2E tests
         run: npm test
 
       - name: Upload built web bundle artifact

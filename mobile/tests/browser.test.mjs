@@ -146,7 +146,7 @@ let chromeProc;
 let userDataDir;
 let debugPort;
 
-async function startChrome() {
+async function startChromeAttempt() {
   userDataDir = await mkdtemp(join(tmpdir(), 'stt-chrome-'));
   chromeProc = spawn(
     CHROME_PATH,
@@ -155,32 +155,97 @@ async function startChrome() {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-networking',
+      '--disable-extensions',
       '--remote-debugging-port=0',
       `--user-data-dir=${userDataDir}`,
       'about:blank'
     ],
-    { stdio: ['ignore', 'ignore', 'pipe'] }
+    { stdio: ['ignore', 'pipe', 'pipe'] }
   );
 
-  const wsEndpoint = await new Promise((resolve, reject) => {
+  const devToolsFile = join(userDataDir, 'DevToolsActivePort');
+  return new Promise((resolve, reject) => {
     let stderr = '';
-    const timer = setTimeout(() => reject(new Error(`Timed out starting Chromium: ${stderr}`)), 10000);
+    let stdout = '';
+    let settled = false;
+    let pollTimer = null;
+    let timeoutTimer = null;
+
+    const finish = (err, wsEndpoint) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearInterval(pollTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (err) {
+        if (chromeProc) {
+          try { chromeProc.kill('SIGKILL'); } catch {}
+        }
+        reject(err);
+      } else {
+        resolve(wsEndpoint);
+      }
+    };
+
+    timeoutTimer = setTimeout(() => {
+      finish(new Error(`Timed out starting Chromium (${CHROME_PATH}): ${stderr || stdout}`));
+    }, 25000);
+
+    pollTimer = setInterval(async () => {
+      try {
+        const raw = await readFile(devToolsFile, 'utf8');
+        const [portLine, pathLine] = raw.trim().split(/\r?\n/);
+        if (portLine && pathLine && /^\d+$/.test(portLine.trim()) && pathLine.trim().startsWith('/devtools/')) {
+          debugPort = portLine.trim();
+          finish(null, `ws://127.0.0.1:${debugPort}${pathLine.trim()}`);
+        }
+      } catch {}
+    }, 250);
+
+    chromeProc.stdout.on('data', chunk => {
+      stdout += chunk.toString();
+    });
+
     chromeProc.stderr.on('data', chunk => {
       stderr += chunk.toString();
       const match = stderr.match(/DevTools listening on (ws:\/\/127\.0\.0\.1:(\d+)\/devtools\/browser\/[^\s]+)/);
       if (match) {
         debugPort = match[2];
-        clearTimeout(timer);
-        resolve(match[1]);
+        finish(null, match[1]);
       }
     });
+
+    chromeProc.on('error', err => {
+      finish(new Error(`Failed spawning Chromium (${CHROME_PATH}): ${err.message}`));
+    });
+
     chromeProc.on('exit', code => {
-      clearTimeout(timer);
-      reject(new Error(`Chromium exited early (${code}): ${stderr}`));
+      finish(new Error(`Chromium exited early (${code}): ${stderr || stdout}`));
     });
   });
+}
 
-  return wsEndpoint;
+async function startChrome() {
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await startChromeAttempt();
+    } catch (err) {
+      lastErr = err;
+      if (userDataDir) {
+        await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
+        userDataDir = null;
+      }
+      chromeProc = null;
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 async function openPage(width = 390, height = 844) {
