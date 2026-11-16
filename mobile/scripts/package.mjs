@@ -1,10 +1,9 @@
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 
 const files = [
   'index.html',
   'styles.css',
   'app.mjs',
-  'photos.mjs',
   'legislation_data.mjs',
   'sw.js',
   'manifest.webmanifest',
@@ -21,4 +20,5 @@ for (const file of files) {
   await mkdir(new URL('.', destination), { recursive: true });
   await copyFile(new URL(`../${file}`, import.meta.url), destination);
 }
+await writeFile(new URL('../dist/.nojekyll', import.meta.url), '');
 console.log(`Prepared ${files.length} Stick the Ticket mobile app files in dist/.`);

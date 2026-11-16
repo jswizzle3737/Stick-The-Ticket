@@ -4,7 +4,8 @@
   "description": "Ontario Provincial Offences Act (POA) charge finder and requirement checklist for frontline officers.",
   "private": true,
   "scripts": {
-    "start": "python3 -m http.server 8766 -d mobile",
+    "start": "node mobile/server.mjs",
+    "build": "node mobile/scripts/package.mjs",
     "test": "node mobile/tests/browser.test.mjs"
   },
   "repository": {

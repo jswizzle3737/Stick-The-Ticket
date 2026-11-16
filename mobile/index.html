@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#070a08">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#e8e8e2">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="manifest" href="./manifest.webmanifest">
@@ -15,22 +16,42 @@
 <body>
   <div class="shell">
     <canvas id="screen" aria-label="Stick the Ticket POA charge browser"></canvas>
-    <div class="camera-bar"><button id="open-photos" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h4l2-3h4l2 3h4v12H4z"/><circle cx="12" cy="13" r="3.5"/></svg> Photos</button></div>
+    <input id="search-input" class="search-overlay" type="text" inputmode="search" enterkeyhint="search" name="stt_poa_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="Search POA charges" hidden>
     <p id="loading" role="status">Opening Stick the Ticket…</p>
-  </div>
-  <dialog id="photos">
-    <div class="dialog-head"><div><h1>Photos</h1><p>Kept on this device</p></div><button id="close-photos" type="button" aria-label="Close photos">✕</button></div>
-    <p class="intro">Take a photo or add an image. It stays in this browser until you delete it or clear its data.</p>
-    <button id="open-camera" class="take-photo" type="button">Open camera</button>
-    <div id="camera-controls" class="camera-preview" hidden>
-      <video id="camera-preview" autoplay playsinline muted aria-label="Live camera preview"></video>
-      <button id="capture-photo" class="take-photo" type="button">Take photo</button>
-      <button id="cancel-camera" class="camera-cancel" type="button">Close camera</button>
+    <div id="auth-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <form id="auth-form" class="modal-card" novalidate>
+        <div class="modal-head">
+          <div>
+            <h2 id="auth-modal-title" class="modal-title">Officer Sign In</h2>
+            <p id="auth-modal-subtitle" class="modal-subtitle">Save charges, element checks, and legislation picks locally.</p>
+          </div>
+          <button id="auth-close" type="button" class="modal-close" aria-label="Close sign in dialog">×</button>
+        </div>
+        <div class="modal-tabs" role="tablist">
+          <button id="auth-mode-signin" type="button" class="modal-tab active" data-mode="signin">Sign In</button>
+          <button id="auth-mode-create" type="button" class="modal-tab" data-mode="create">Create Profile</button>
+        </div>
+        <label class="field-label" for="auth-username">Officer Name or Username</label>
+        <input id="auth-username" class="field-input" type="text" autocomplete="username" maxlength="32" placeholder="e.g. Ofc. Miller" required>
+        <div id="auth-badge-wrap">
+          <label class="field-label" for="auth-badge">Badge / Unit # (optional)</label>
+          <input id="auth-badge" class="field-input" type="text" maxlength="16" placeholder="e.g. 412">
+        </div>
+        <label class="field-label" for="auth-pin">Passcode / PIN (optional)</label>
+        <input id="auth-pin" class="field-input" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12" placeholder="Optional PIN">
+        <label id="auth-carry-wrap" class="field-check" hidden>
+          <input id="auth-carry" type="checkbox" checked>
+          <span id="auth-carry-label">Keep current guest saved work</span>
+        </label>
+        <p id="auth-error" class="modal-error" role="alert" hidden></p>
+        <div class="modal-actions">
+          <button id="auth-cancel" type="button" class="btn-secondary">Cancel</button>
+          <button id="auth-submit" type="submit" class="btn-primary">Sign In</button>
+        </div>
+      </form>
     </div>
-    <label class="choose-photo"><span>Use phone camera or choose an image</span><input id="camera" type="file" accept="image/*" capture="environment"></label>
-    <p id="photo-status" role="status" aria-live="polite"></p>
-    <div id="photo-grid" class="photo-grid"></div>
-  </dialog>
+    <input id="import-backup-input" type="file" accept=".json,application/json" hidden>
+  </div>
   <script type="module" src="./app.mjs"></script>
 </body>
 </html>

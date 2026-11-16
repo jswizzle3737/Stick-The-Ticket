@@ -1,38 +1,31 @@
 # Stick the Ticket
 
-A fast, lightweight reference and compliance checklist application for Ontario Provincial Offences Act (POA) charges, designed specifically for frontline law enforcement officers.
+A fast, offline-ready reference and compliance checklist PWA for Ontario Provincial Offences Act (POA) charges, designed for frontline law enforcement officers.
 
-Stick the Ticket allows police officers to quickly find and identify POA charges (Highway Traffic Act, Compulsory Automobile Insurance Act, Liquor Licence and Control Act, Trespass to Property Act, Smoke-Free Ontario Act, Cannabis Control Act, etc.), review set fines, total payable amounts, demerit points, short-form ticket wording, and run through an interactive **Elements of the Offence & Ticket Requirements Checklist** before issuing or sticking the charge/ticket.
+## Online Beta for Testers
 
-## Design
+- **Live Web App (GitHub Pages)**: <https://jswizzle3737.github.io/Stick-The-Ticket/>
+- **Install on Phone (Offline PWA)**: Open the URL in Safari (iOS) or Chrome (Android) and select **Add to Home Screen** / **Install App**. All 1,006 HTA offences, saved tickets, and element checklists are cached locally on-device.
 
-Stick the Ticket shares the clean, high-contrast, distraction-free phone-app aesthetic of *Stick the Charge*, reimagined with an Ontario provincial green aesthetic:
-- **Paper & Slate Palette**: Subtle sage/moss green tint across light paper surfaces (`#e8efe9`) and deep dark slate (`#070c08`).
-- **Forest & Emerald Accents**: `#1b7a42` and `#22c55e` replacing the federal crimson, symbolizing provincial law enforcement & traffic compliance.
-- **Trillium Emblem**: Hand-drawn vector geometry of Ontario's official floral emblem (the white trillium), crisp at any display density.
-- **Interactive Checklists**: 
-  - Essential offence elements checklist (actions, intent, conditions required to prove the charge).
-  - Part I / Part III statutory requirement verification (Certificate of Offence vs. Offence Notice, set fine vs. court summons, 30-day service window, mandatory officer declaration, proper short-form wording).
-  - Interactive status persistence directly in local storage.
-- **Saved / Stuck Board**: Pin frequently issued tickets for instant recall on patrol.
-- **Local Photo Notes**: Capture or import photographic evidence locally (speed radar reading, license plate, vehicle condition, liquor container) with private on-device IndexedDB storage.
+## Features
 
-## Statutes Covered
+- **1,006 HTA Offences Indexed**: Highway Traffic Act Schedule 43 (Items 1–558), Schedule 6, Schedule 7 (Reg. 604), Schedule 8 (Reg. 622), and Statutory Part III offences with set fines, Victim Fine Surcharge + court cost totals, demerit points, O. Reg. 950 short-form wording, and verbatim statutory text.
+- **Bidirectional Element & Concept Search**:
+  - Search by section (`172`, `s. 78.1`, `item 172`), charge name, ticket wording, or **elements to prove** (`electronic data`, `liftable axle`, `slow down tow truck`).
+  - Automatic Canadian ↔ US spelling equivalence (`centre↔center`, `licence↔license`, `metre↔meter`, `colour↔color`, `tire↔tyre`), stemming, stopword pruning, everyday concept aliases (`cell phone`, `missing brake light`, `val tag`, `running a red light`), typo tolerance (`Did you mean…`), and one-tap filter escapes.
+  - Enforcement facets (`All`, `Part III · Summons`, `Demerit pts`, `Part I`) plus independent **Saved** ticket search.
+- **Detail Match Attribution & Jump-to-Match**: Highlights matching query/concept terms across Title, Summary, Prove elements, OR options, Wording, Notes, and Statutory Text with green match markers and a quick `Match in Prove … · Jump ↓` button.
+- **Settings, Appearance & Officer Profiles**: High-contrast Light ("Paper") & Dark ("Charcoal") themes, local Officer Profile sign-in (with optional PIN), JSON workspace Export/Import backup, multi-select POA legislation scope, and integrated POA Field Rules checklist.
 
-1. **Highway Traffic Act (HTA)** – Speeding, careless driving, red light, stop sign, seatbelt, distracted driving / handheld device, driving while suspended, fail to surrender permit/licence.
-2. **Compulsory Automobile Insurance Act (CAIA)** – Operate motor vehicle without insurance, fail to surrender insurance card.
-3. **Liquor Licence and Control Act, 2019 (LLCA)** – Open liquor in motor vehicle, intoxicated in public place, consume liquor under 19, supply liquor to person under 19.
-4. **Trespass to Property Act (TTPA)** – Enter premises when entry prohibited, fail to leave premises when directed.
-5. **Cannabis Control Act, 2017 (CCA)** – Unlawful consumption in vehicle, open cannabis in vehicle, consume cannabis under 19.
-6. **Smoke-Free Ontario Act, 2017 (SFOA)** – Smoke/vape in prohibited place or vehicle with youth under 16.
-
-## Running the Web App
-
-The mobile directory contains the progressive web app (PWA) ready for local preview or mobile deployment:
+## Local Development, Build & Verification
 
 ```sh
-cd mobile
-python3 -m http.server 8766
-```
+# Run the web app locally
+npm start
 
-Open `http://localhost:8766/` in your browser or test with mobile viewport emulation.
+# Package the static PWA bundle into mobile/dist/
+npm run build
+
+# Run all 18 headless Chromium end-to-end tests
+npm test
+```
